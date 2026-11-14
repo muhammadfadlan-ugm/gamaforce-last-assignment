@@ -1,0 +1,27 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <model name="maze">
+    <static>true</static> <!-- True karena maze tidak bergerak/diam -->
+    <link name="maze_link">
+      
+      <!-- Bagian Tampilan Visual -->
+      <visual name="maze_visual">
+        <geometry>
+          <mesh>
+            <uri>model://Vision/mesh/vision.glb</uri>
+          </mesh>
+        </geometry>
+      </visual>
+
+      <!-- Bagian Fisika Benturan (Collision) -->
+      <collision name="maze_collision">
+        <geometry>
+          <mesh>
+            <uri>model://Vision/mesh/vision.stl</uri>
+          </mesh>
+        </geometry>
+      </collision>
+
+    </link>
+  </model>
+</sdf>

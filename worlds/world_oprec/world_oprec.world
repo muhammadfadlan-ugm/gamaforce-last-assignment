@@ -1,0 +1,150 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <world name="world_oprec">
+    <!-- Pengaturan Fisika & Kecepatan Simulasi -->
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <!-- Plugin Wajib Gazebo Sim -->
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+    
+    <gui fullscreen="0">
+  <plugin filename="MinimalScene" name="3D View">
+    <gz-gui>
+      <title>3D View</title>
+      <property type="bool" key="showTitleBar">false</property>
+      <property type="string" key="state">docked</property>
+    </gz-gui>
+    <engine>ogre2</engine>
+    <scene>scene</scene>
+    <ambient_light>0.4 0.4 0.4</ambient_light>
+    <background_color>0.8 0.8 0.8</background_color>
+    <camera_pose>-6 -8 4 0 0.4 1.57</camera_pose>
+  </plugin>
+  <plugin filename="GzSceneManager" name="Scene Manager">
+    <gz-gui><property key="resizable" type="bool">false</property>
+      <property key="width" type="double">5</property>
+      <property key="height" type="double">5</property>
+      <property key="state" type="string">floating</property>
+      <property key="showTitleBar" type="bool">false</property></gz-gui>
+  </plugin>
+  <plugin filename="InteractiveViewControl" name="Interactive view control">
+    <gz-gui><property key="resizable" type="bool">false</property>
+      <property key="width" type="double">5</property>
+      <property key="height" type="double">5</property>
+      <property key="state" type="string">floating</property>
+      <property key="showTitleBar" type="bool">false</property></gz-gui>
+  </plugin>
+  <plugin filename="WorldControl" name="World control">
+    <gz-gui>
+      <title>World control</title>
+      <property type="bool" key="showTitleBar">false</property>
+      <property type="bool" key="resizable">false</property>
+      <property type="double" key="height">72</property>
+      <property type="double" key="width">121</property>
+      <property type="double" key="z">1</property>
+      <property type="string" key="state">floating</property>
+      <anchors target="3D View">
+        <line own="left" target="left"/>
+        <line own="bottom" target="bottom"/>
+      </anchors>
+    </gz-gui>
+    <play_pause>true</play_pause>
+    <step>true</step>
+    <start_paused>true</start_paused>
+  </plugin>
+
+  <!-- Tampilan kamera depan -->
+  <plugin filename="ImageDisplay" name="Kamera Depan">
+    <gz-gui>
+      <title>Kamera Depan</title>
+      <property key="state" type="string">floating</property>
+      <property type="double" key="x">10</property>
+      <property type="double" key="y">10</property>
+      <property type="double" key="width">400</property>
+      <property type="double" key="height">320</property>
+    </gz-gui>
+    <topic>camera_front</topic>
+    <topic_picker>false</topic_picker>
+  </plugin>
+</gui>
+
+    <!-- Pencahayaan Utama -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <direction>-0.5 0.1 -0.9</direction>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+    </light>
+
+    <!-- Lantai Dasar -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 1. Maze: dirotasi roll 90° supaya "tiduran" -->
+    <include>
+      <uri>model://MAZE</uri>
+      <name>MAZETOK</name>
+      <!-- x y z roll pitch yaw -->
+      <pose>-0.5 0 0 1.5708 0 0</pose>
+    </include>
+
+    <!-- 2. Tunnel: rotasi sama dengan maze, digeser ke tengah & dinaikkan sedikit -->
+    <include>
+      <uri>model://tunnel</uri>
+      <name>Tunnel</name>
+      <!-- x y z roll pitch yaw -->
+      <pose>-4.98 -0.1 0 1.5708 0 0</pose>
+    </include>
+
+    <include>
+      <uri>model://Vision</uri>
+      <name>Track Vision</name>
+      <pose>3 0 0 1.5708 0 0</pose>
+    </include>
+
+    <include>
+      <uri>model://target</uri>
+      <name>Target_1</name>
+      <pose>-2 12 0 1.5708 0 0</pose>
+    </include>
+
+    <include>
+      <uri>model://drone</uri>
+      <name>iris</name>
+      <pose degrees="true">0 -8 0.195 0 0 90</pose>
+    </include>
+
+
+  </world>
+</sdf>
