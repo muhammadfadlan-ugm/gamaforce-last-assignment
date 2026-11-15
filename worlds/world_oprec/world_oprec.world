@@ -75,6 +75,21 @@
     <topic>camera_front</topic>
     <topic_picker>false</topic_picker>
   </plugin>
+  
+  <!-- Tampilan kamera bawah -->
+    <plugin filename="ImageDisplay" name="Kamera Bawah">
+      <gz-gui>
+        <title>Kamera Bawah</title>
+        <property key="state" type="string">floating</property>
+        <!-- Posisi x="420" digeser ke sebelah kanan kamera depan agar tidak bertumpuk -->
+        <property type="double" key="x">420</property>
+        <property type="double" key="y">10</property>
+        <property type="double" key="width">400</property>
+        <property type="double" key="height">320</property>
+      </gz-gui>
+      <topic>camera_down</topic>
+      <topic_picker>false</topic_picker>
+    </plugin>
 </gui>
 
     <!-- Pencahayaan Utama -->
@@ -116,7 +131,7 @@
       <uri>model://MAZE</uri>
       <name>MAZETOK</name>
       <!-- x y z roll pitch yaw -->
-      <pose>-0.5 0 0 1.5708 0 0</pose>
+      <pose>17.51 0 0 1.5708 0 0</pose>
     </include>
 
     <!-- 2. Tunnel: rotasi sama dengan maze, digeser ke tengah & dinaikkan sedikit -->
@@ -124,25 +139,31 @@
       <uri>model://tunnel</uri>
       <name>Tunnel</name>
       <!-- x y z roll pitch yaw -->
-      <pose>-4.98 -0.1 0 1.5708 0 0</pose>
+      <pose>13 -0.1 0 1.5708 0 0</pose>
     </include>
 
     <include>
-      <uri>model://Vision</uri>
+      <uri>model://obstacles</uri>
       <name>Track Vision</name>
-      <pose>3 0 0 1.5708 0 0</pose>
+      <pose>-27 -5 0 0 0 0</pose>
+    </include>
+    
+    <include>
+      <uri>model://centerring</uri>
+      <name>center and ring</name>
+      <pose>3.3 12 0 1.5708 0 0</pose>
     </include>
 
     <include>
       <uri>model://target</uri>
       <name>Target_1</name>
-      <pose>-2 12 0 1.5708 0 0</pose>
+      <pose>-2 25 0 1.5708 0 0</pose>
     </include>
 
     <include>
       <uri>model://drone</uri>
       <name>iris</name>
-      <pose degrees="true">0 -8 0.195 0 0 90</pose>
+      <pose degrees="true">0 -15 0.195 0 0 90</pose>
     </include>
 
 

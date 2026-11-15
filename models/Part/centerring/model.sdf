@@ -8,7 +8,7 @@
       <visual name="maze_visual">
         <geometry>
           <mesh>
-            <uri>model://Vision/mesh/vision.glb</uri>
+            <uri>model://centerring/mesh/centerring.glb</uri>
           </mesh>
         </geometry>
       </visual>
@@ -20,7 +20,7 @@
         <pose degrees="true">0 0 0 -90 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://Vision/mesh/vision.stl</uri>
+            <uri>model://centerring/mesh/centerring.stl</uri>
           </mesh>
         </geometry>
       </collision>

@@ -1,0 +1,4 @@
+.vscode/
+__pycache__/
+*.blend1
+target.json
