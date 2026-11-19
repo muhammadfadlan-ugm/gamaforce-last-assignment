@@ -327,63 +327,56 @@ class DroneController:
 
 
 # ==============================================================================
-# 3. IMPLEMENTASI 10 TAHAP ALGORITMA (KECEPATAN 3X, ZERO TIMEOUT)
+# 3. IMPLEMENTASI 10 TAHAP ALGORITMA (EVENT-DRIVEN CALLBACK, KECEPATAN TINGGI)
 # ==============================================================================
 
 def tahap_1_cari_lingkaran_hijau(drone: DroneController, sensor: MissionVisionListener):
     """
     TAHAP 1:
-    Setelah keluar terowongan, drone HARUS bergerak aktif ke kiri (sumbu X negatif)
-    terlebih dahulu menuju zona lingkaran hijau (vy = -1.80 m/s), lalu memindai
-    kamera bawah secara kontinu sampai lingkaran hijau ditemukan.
+    Setelah keluar terowongan, drone melaju ke kiri (sumbu X negatif: vy = -1.25 m/s)
+    sambil memproses callback kamera bawah (/camera_down) secara kontinu hingga
+    lingkaran hijau tertangkap oleh detektor (tanpa timer buta atau estimasi meter).
     """
     print("\n" + "=" * 65)
-    print(">>> [TAHAP 1] BERGERAK AKTIF KE KIRI (SUMBU X NEGATIF) MENUJU LINGKARAN HIJAU")
-    print(">>> (Kecepatan: vy = -1.80 m/s | Drone meluncur ke kiri terlebih dahulu)")
+    print(">>> [TAHAP 1] BERGERAK KE KIRI (SUMBU X NEGATIF) MENCARI LINGKARAN HIJAU")
+    print(">>> (Tracking Murni Berbasis Callback Deteksi Kamera Bawah | Sumbu -X)")
     print("=" * 65)
 
     drone.update()
-    drone.set_yaw(90.0, speed_deg_s=90.0, timeout=2.0)
+    drone.brake(0.3)
 
-    # FASE 1A: Drone HARUS bergerak ke kiri (sumbu X negatif) terlebih dahulu
-    # Meluncur ke kiri selama minimal 3.0 detik (menempuh jarak ~5.5 meter menuju X = 3.3)
-    print("[*] Fase 1A: Meluncur aktif ke KIRI (sumbu X negatif) sejauh 5-6 meter...")
-    t_min_move = time.time() + 3.0
-    while time.time() < t_min_move and rclpy.ok():
-        drone.update()
-        drone.send_velocity_body(vx=0.20, vy=-1.80, vz_up=0.0)
-        time.sleep(0.04)
+    print("[*] Melaju lurus murni ke KIRI (sumbu X negatif, vy = -1.25 m/s)...")
+    print("[*] Memindai feed /camera_down dari callback secara kontinu...")
 
-    # FASE 1B: Sambil terus meluncur ke kiri, aktifkan pemindaian kamera bawah
-    print("[*] Fase 1B: Mendekati area sasaran. Memindai kamera bawah mencari lingkaran hijau...")
     step_cnt = 0
     while rclpy.ok():
         drone.update()
         green = sensor.get_green()
 
-        # Deteksi lingkaran hijau (verifikasi bentuk bulat dan area minimal)
+        # Deteksi lingkaran hijau secara reaktif langsung dari callback
         if green is not None and green.detected and green.circularity >= 0.35 and green.area >= 180.0:
-            print(f"\n[OK] LINGKARAN HIJAU DITEMUKAN!")
+            print(f"\n[OK] LINGKARAN HIJAU TERDETEKSI OLEH CALLBACK!")
             print(f"     -> Posisi: ({green.cx}, {green.cy}) | Area: {green.area:.0f} px | Sirkularitas: {green.circularity:.2f}")
-            drone.brake(0.4)
+            drone.brake(0.3)
             break
 
-        # Terus meluncur ke kiri (sumbu X negatif)
-        drone.send_velocity_body(vx=0.15, vy=-1.65, vz_up=0.0)
+        # Pertahankan gerak murni ke kiri (sumbu X negatif) tanpa memutar yaw
+        drone.send_velocity_body(vx=0.0, vy=-1.25, vz_up=0.0, yaw_rate=0.0)
         time.sleep(0.04)
         step_cnt += 1
         if step_cnt % 25 == 0:
-            print(f"  [*] Meluncur ke kiri... (Posisi drone: X={drone.pos_x:.2f}, Y={drone.pos_y:.2f})")
+            print(f"  [*] Mencari lingkaran hijau ke kiri... (Posisi drone: X={drone.pos_x:.2f}, Y={drone.pos_y:.2f})")
 
 
 def tahap_2_centering_lingkaran_hijau(drone: DroneController, sensor: MissionVisionListener):
     """
     TAHAP 2:
-    Centering posisi X dan Y terhadap lingkaran hijau (kecepatan respon 3x, kontinu).
+    Centering posisi X dan Y terhadap lingkaran hijau berbasis visual servoing
+    (umpan balik piksel dx, dy langsung dari callback kamera bawah).
     """
     print("\n" + "=" * 65)
     print(">>> [TAHAP 2] CENTERING POSISI X DAN Y TERHADAP LINGKARAN HIJAU")
-    print(">>> (P-Controller Cepat: Max Speed 1.0 m/s | Deteksi Kontinu)")
+    print(">>> (Visual Servoing Closed-Loop: P-Controller Reaktif | Toleransi 22px)")
     print("=" * 65)
 
     steady_count = 0
@@ -393,27 +386,30 @@ def tahap_2_centering_lingkaran_hijau(drone: DroneController, sensor: MissionVis
         green = sensor.get_green()
 
         if green is None or not green.detected:
-            drone.send_velocity_body(0, 0, 0)
+            # Jika sesaat hilang dari pandangan, pertahankan posisi (hover)
+            drone.send_velocity_body(0.0, 0.0, 0.0, yaw_rate=0.0)
             time.sleep(0.04)
             continue
 
         dx = green.dx
         dy = green.dy
 
-        # P-Gain 3x lebih agresif untuk centering kilat
-        vx_cmd = np.clip(-0.0055 * dy, -1.0, 1.0)
-        vy_cmd = np.clip(0.0055 * dx, -1.0, 1.0)
+        # Visual Servoing P-Controller:
+        # Kamera bawah: dy > 0 berarti target di bawah frame (perlu mundur / vx < 0)
+        #               dx > 0 berarti target di kanan frame (perlu geser kanan / vy > 0)
+        vx_cmd = np.clip(-0.0055 * dy, -0.85, 0.85)
+        vy_cmd = np.clip( 0.0055 * dx, -0.85, 0.85)
 
         if abs(dx) <= 22 and abs(dy) <= 22:
             steady_count += 1
-            drone.send_velocity_body(0, 0, 0)
-            if steady_count >= 5:  # Stabil seketika (~0.2 detik)
+            drone.send_velocity_body(0.0, 0.0, 0.0, yaw_rate=0.0)
+            if steady_count >= 5:  # Stabil di tengah selama ~0.2 detik
                 print(f"[OK] Centering Lingkaran Hijau SELESAI! (dx={dx:+d}, dy={dy:+d})")
-                drone.brake(0.5)
+                drone.brake(0.4)
                 break
         else:
             steady_count = 0
-            drone.send_velocity_body(vx_cmd, vy_cmd, 0.0)
+            drone.send_velocity_body(vx_cmd, vy_cmd, 0.0, yaw_rate=0.0)
 
         time.sleep(0.04)
 
@@ -429,8 +425,6 @@ def tahap_3_deteksi_dan_centering_donat_merah(drone: DroneController, sensor: Mi
     print(">>> (Naik / Turun Otomatis | Kecepatan Penyesuaian 3x | Kontinu)")
     print("=" * 65)
 
-    # Hadapkan ke arah donat merah (Yaw 90°)
-    drone.set_yaw(90.0, speed_deg_s=90.0, timeout=2.0)
     drone.brake(0.3)
 
     steady_count = 0
@@ -451,7 +445,7 @@ def tahap_3_deteksi_dan_centering_donat_merah(drone: DroneController, sensor: Mi
 
             if abs(dx) <= 25 and abs(dy) <= 25:
                 steady_count += 1
-                drone.send_velocity_body(0.2, 0, 0)
+                drone.send_velocity_body(0.2, 0, 0, yaw_rate=0.0)
                 if steady_count >= 5:
                     hole_str = "Lubang Tembus" if donut.has_hole else "Titik Pusat"
                     print(f"[OK] Centering Donat Merah SELESAI! ({hole_str}: dx={dx:+d}, dy={dy:+d})")
@@ -459,7 +453,7 @@ def tahap_3_deteksi_dan_centering_donat_merah(drone: DroneController, sensor: Mi
                     break
             else:
                 steady_count = 0
-                drone.send_velocity_body(vx=0.20, vy=vy_cmd, vz_up=vz_cmd)
+                drone.send_velocity_body(vx=0.20, vy=vy_cmd, vz_up=vz_cmd, yaw_rate=0.0)
 
         else:
             steady_count = 0
@@ -471,14 +465,14 @@ def tahap_3_deteksi_dan_centering_donat_merah(drone: DroneController, sensor: Mi
             # Naik / Turun cepat (0.75 m/s) mencari donat
             if search_phase == 0:
                 print("  [*] Mencari donat: Naik vertikal (0.75 m/s)...")
-                drone.send_velocity_body(0, 0, vz_up=0.75)
+                drone.send_velocity_body(0, 0, vz_up=0.75, yaw_rate=0.0)
             elif search_phase == 1:
                 print("  [*] Mencari donat: Turun vertikal (-0.75 m/s)...")
-                drone.send_velocity_body(0, 0, vz_up=-0.75)
+                drone.send_velocity_body(0, 0, vz_up=-0.75, yaw_rate=0.0)
             elif search_phase == 2:
-                drone.send_velocity_body(vx=0.3, vy=0, vz_up=0)
+                drone.send_velocity_body(vx=0.3, vy=0, vz_up=0, yaw_rate=0.0)
             else:
-                drone.send_velocity_body(0, 0, vz_up=0)
+                drone.send_velocity_body(0, 0, vz_up=0, yaw_rate=0.0)
 
         time.sleep(0.04)
 
@@ -522,9 +516,7 @@ def tahap_5_hingga_10_kunci_dan_kamikaze_nomor_2(
     print(">>> (Hadap Langsung ke Sasaran 2 | Zero Timeout | Kecepatan Tabrak 7.0 m/s)")
     print("=" * 65)
 
-    # 1. LANGSUNG MENGHADAP KE TARGET NOMOR 2 (Lurus ke depan, Yaw = 90.0°)
-    print(f"[*] Menghadapkan drone tepat ke arah target nomor {target_digit} (Yaw: 90.0°)...")
-    drone.set_yaw(90.0, speed_deg_s=90.0, timeout=2.0)
+    # 1. POSISIKAN DRONE MENGHADAP LURUS KE DEPAN (Arah Sasaran Bulls Eye #2)
     drone.brake(0.4)
 
     # 2. DETEKSI BERKELANJUTAN TANPA TIMEOUT HINGGA NOMOR 2 TERKUNCI
