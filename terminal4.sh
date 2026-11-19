@@ -23,3 +23,4 @@ echo "[OK] Sensor terdeteksi di ROS 2!"
 echo "[3/3] Menjalankan scripts/misi_gabungan.py..."
 cd "$REPO_DIR"
 python3 "$REPO_DIR/scripts/misi_gabungan.py"
+

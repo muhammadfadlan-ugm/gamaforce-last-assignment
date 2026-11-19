@@ -21,3 +21,4 @@ echo " status di console berwarna HIJAU sebelum menjalankan MAVROS!"
 echo "----------------------------------------------------------"
 cd "$REPO_DIR"
 sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console --out 127.0.0.1:14560
+

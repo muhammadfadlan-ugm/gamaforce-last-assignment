@@ -14,3 +14,4 @@ source /opt/ros/jazzy/setup.bash
 # 2. Jalankan launch file
 echo "[2/2] Menjalankan sensor bridge & MAVROS node..."
 ros2 launch "$REPO_DIR/scripts/sensors_mavros.launch.py"
+

@@ -24,3 +24,4 @@ export GZ_SIM_RESOURCE_PATH="$HOME/sim/ardu_ws/install/ardupilot_gazebo/share:$R
 echo "[3/3] Membuka Gazebo Sim GUI..."
 cd "$REPO_DIR/worlds/world_oprec"
 gz sim -r "$REPO_DIR/worlds/world_oprec/world_oprec.world"
+
