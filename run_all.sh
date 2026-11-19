@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-if [ -d "$SCRIPT_DIR/gamaforce-last-assignment" ]; then
-    REPO_DIR="$SCRIPT_DIR/gamaforce-last-assignment"
-else
-    REPO_DIR="$SCRIPT_DIR"
-fi
+REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 echo "=========================================================="
 echo "    Menjalankan Seluruh Lingkungan Simulasi Gamaforce     "
@@ -16,7 +11,7 @@ echo "=========================================================="
 echo "[+] Membuka jendela Terminal 2 (SITL ArduCopter)..."
 gnome-terminal --title="Terminal 2 - SITL ArduCopter" -- bash -c "
 cd '$REPO_DIR'
-'$REPO_DIR/terminal2_sitl.sh'
+'$REPO_DIR/terminal2.sh'
 exec bash
 "
 
@@ -31,7 +26,7 @@ echo ' dan muncul pesan \"EKF3 IMU origin set\" sebelum melanjutkan.'
 echo '========================================================================='
 read -rp 'Tekan [ENTER] jika Terminal 2 sudah siap (hijau) untuk memulai MAVROS...'
 echo ''
-'$REPO_DIR/terminal3_mavros.sh'
+'$REPO_DIR/terminal3.sh'
 exec bash
 "
 
@@ -49,11 +44,10 @@ until ros2 topic list 2>/dev/null | grep -q '/lidar_front'; do
 done
 echo '[OK] Sensor terdeteksi!'
 read -rp 'Tekan [ENTER] untuk menjalankan scripts/misi_gabungan.py...'
-'$REPO_DIR/terminal4_misi.sh'
+'$REPO_DIR/terminal4.sh'
 exec bash
 "
 
 # 4. Jalankan Terminal 1 (Randomizer & Gazebo Sim) di jendela saat ini
 echo "[+] Menjalankan Terminal 1 (Gazebo Sim) di terminal ini..."
-exec "$REPO_DIR/terminal1_gazebo.sh"
-
+exec "$REPO_DIR/terminal1.sh"

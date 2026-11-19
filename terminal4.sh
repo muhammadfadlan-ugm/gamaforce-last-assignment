@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-if [ -d "$SCRIPT_DIR/gamaforce-last-assignment" ]; then
-    REPO_DIR="$SCRIPT_DIR/gamaforce-last-assignment"
-else
-    REPO_DIR="$SCRIPT_DIR"
-fi
+REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 echo "=========================================================="
 echo "    [Terminal 4] Eksekusi Misi Drone (misi_gabungan.py)   "
@@ -28,4 +23,3 @@ echo "[OK] Sensor terdeteksi di ROS 2!"
 echo "[3/3] Menjalankan scripts/misi_gabungan.py..."
 cd "$REPO_DIR"
 python3 "$REPO_DIR/scripts/misi_gabungan.py"
-

@@ -19,4 +19,3 @@ pkill -9 -f "misi_gabungan.py" 2>/dev/null || true
 pkill -9 -f "baca_semua_data.py" 2>/dev/null || true
 
 echo "[OK] Semua proses simulasi berhasil dihentikan!"
-

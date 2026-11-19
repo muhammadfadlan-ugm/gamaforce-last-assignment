@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-# Dapatkan direktori repository
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-if [ -d "$SCRIPT_DIR/gamaforce-last-assignment" ]; then
-    REPO_DIR="$SCRIPT_DIR/gamaforce-last-assignment"
-else
-    REPO_DIR="$SCRIPT_DIR"
-fi
+# Path root repositori
+REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 echo "=========================================================="
 echo "    [Terminal 1] Randomizer & Gazebo Sim (GUI)            "
@@ -29,4 +24,3 @@ export GZ_SIM_RESOURCE_PATH="$HOME/sim/ardu_ws/install/ardupilot_gazebo/share:$R
 echo "[3/3] Membuka Gazebo Sim GUI..."
 cd "$REPO_DIR/worlds/world_oprec"
 gz sim -r "$REPO_DIR/worlds/world_oprec/world_oprec.world"
-
