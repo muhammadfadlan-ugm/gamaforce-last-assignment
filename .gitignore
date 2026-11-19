@@ -1,4 +1,54 @@
-.vscode/
+# ============================================
+# Python & Bytecode
+# ============================================
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ============================================
+# ArduPilot SITL & MAVProxy Runtime Files
+# ============================================
+eeprom.bin
+*.bin
+*.BIN
+*.parm
+*.tlog
+*.tlog.raw
+terrain/
+logs/
+
+# ============================================
+# Blender & 3D Design Backups
+# ============================================
 *.blend1
+*.blend2
+
+# ============================================
+# ROS 2 & Build Artifacts
+# ============================================
+build/
+install/
+log/
+*.log
+
+# ============================================
+# Simulation Generated & Temp Files
+# ============================================
 target.json
+**/target.json
+worlds/models/
+
+# ============================================
+# IDE, Editor & OS Files
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
