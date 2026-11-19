@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 Script Teleportasi Drone (Iris) di Gazebo Sim
@@ -25,6 +26,7 @@ PRESETS = {
     "5": ("Di Atas Lingkaran Hijau (Centering Ring)", {"x": 3.3, "y": 12.0, "z": 1.5, "yaw": 90}),
     "6": ("Di Depan Target Bulls Eye (1, 2, 3)", {"x": -2.0, "y": 22.0, "z": 1.5, "yaw": 90}),
     "7": ("Di Tengah Arena Maze", {"x": 17.5, "y": 0.0, "z": 1.3, "yaw": 90}),
+    "8": ("misi kanan ketiga", {"x": 3.3, "y": 18.0, "z": 1.3, "yaw": 90})
 }
 
 
