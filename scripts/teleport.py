@@ -109,7 +109,7 @@ def interactive_menu():
         elif choice in PRESETS:
             _, coords = PRESETS[choice]
             teleport(coords["x"], coords["y"], coords["z"], coords.get("yaw", 90.0))
-        elif choice == "8":
+        elif choice == "9":
             try:
                 x = float(input("  Masukkan X : "))
                 y = float(input("  Masukkan Y : "))
