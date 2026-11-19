@@ -1,32 +1,30 @@
 #!/usr/bin/env python3
 """
-MISI 3: NAVIGASI LENGKAP & KAMIKAZE TARGET NOMOR 2
-==================================================
-Implementasi algoritma misi 3 sesuai instruksi pada skrip_misi3.md:
+MISI 3: NAVIGASI LENGKAP & KAMIKAZE TARGET NOMOR 2 (HIGH-SPEED & ZERO TIMEOUT)
+=============================================================================
+Implementasi algoritma misi 3 berdasarkan skrip_misi3.md dan revisi operasional:
 
-1. Setelah keluar dari terowongan, drone bergerak ke kiri (X negatif) mencari lingkaran hijau.
-2. Ketika mendeteksi lingkaran hijau, drone melakukan centering posisi X dan Y terhadap lingkaran hijau.
-3. Setelah centering lingkaran hijau, drone mendeteksi lingkaran merah (bisa naik/turun mencari lingkaran merah).
-4. Setelah mendeteksi dan centering terhadap titik pusat lingkaran merah, drone melaju ke depan tepat
-   di tengah lingkaran merah (karena lingkaran merah berbentuk seperti donat).
-5. Setelah itu drone mendeteksi angka pada Bulls Eye.
-6. Drone melakukan yaw +- 60 derajat untuk memindai semua Bulls Eye di depannya.
-7. Menggunakan modul OpenCV berkecepatan tinggi pada ./deteksi/ (tanpa YOLO / deep learning).
-8. Koordinat dan heading nomor 2 dari Bulls Eye didapatkan dan disimpan (di-keep).
-9. Drone menghadap (yaw & pitch/ketinggian) tepat ke titik tengah nomor 2.
-10. Drone terbang melesat maju hingga menabrak sasaran nomor 2 (Kamikaze).
+1. Kecepatan Ditingkatkan 3x Lipat:
+   - Gerak lateral cari hijau: vy = -1.65 m/s (3x dari 0.55 m/s).
+   - Servoing centering: kecepatan max s.d. 1.0 m/s (3x lebih responsif).
+   - Menembus donat merah: sprint maju vx = 4.0 m/s (3x dari 1.35 m/s).
+   - Yaw alignment: laju putar hingga 1.8 rad/s (~100 deg/s).
+   - Kamikaze charge: sprint tabrak vx = 7.0 m/s (3x dari 2.4 m/s).
 
-Modul Deteksi:
-  Menggunakan package ./deteksi/ yang sudah disediakan:
-  - GreenRingDetector  (centering_hijau.py  - kamera bawah)
-  - RedDonutDetector   (donat_merah.py     - kamera depan)
-  - KamikazeDetector   (kamikaze.py        - kamera depan, HOG + Linear SVM)
+2. Zero Timeout (Deteksi Berkelanjutan Tanpa Batas):
+   - Tidak ada timeout yang membatalkan atau melompati tahap.
+   - Drone memindai dan mendeteksi rintangan secara kontinu sampai berhasil.
+
+3. Kunci Sasaran Nomor 2 Setelah Donat Merah:
+   - Selesai menembus donat, drone LANGSUNG menghadap ke nomor 2 (Yaw 90° lurus ke depan).
+   - Kamera depan langsung mendeteksi nomor 2 (HOG+SVM, Red Bullseye, Template Matching).
+   - Centering Yaw & Pitch tepat ke titik tengah angka 2.
+   - Drone terbang cepat meluncur menabrak angka nomor 2 (Kamikaze).
 
 Cara Menjalankan:
-  python3 scripts/misi3.py                 # Eksekusi penuh dari tahap 1 s.d. 10
-  python3 scripts/misi3.py --step 3        # Mulai langsung dari tahap 3 (donat merah)
-  python3 scripts/misi3.py --step 5        # Mulai langsung dari tahap 5 (bullseye kamikaze)
-  python3 scripts/misi3.py --step 5 --teleport  # Auto-teleport ke depan Bulls Eye lalu jalankan
+  python3 scripts/misi3.py
+  python3 scripts/misi3.py --step 3 --teleport
+  python3 scripts/misi3.py --step 5 --teleport
 """
 
 import sys
@@ -54,7 +52,6 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, LaserScan
 
-# Tambahkan path scripts/ ke sys.path untuk import package deteksi
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
@@ -71,7 +68,7 @@ from deteksi import (
 
 mavlink = mavutil.mavlink
 DEFAULT_KONEKSI = 'udpin:127.0.0.1:14560'
-TINGGI_DEFAULT = 1.35  # Ketinggian standar drone
+TINGGI_DEFAULT = 1.35
 
 
 # ==============================================================================
@@ -79,47 +76,38 @@ TINGGI_DEFAULT = 1.35  # Ketinggian standar drone
 # ==============================================================================
 class MissionVisionListener:
     """
-    Listener thread-safe untuk stream sensor kamera dan LiDAR dari ROS 2.
-    Mengintegrasikan modul deteksi dari ./deteksi/ secara real-time.
+    Listener thread-safe untuk kamera dan LiDAR ROS 2 dengan deteksi real-time berkelanjutan.
     """
     def __init__(self, target_digit: int = 2):
         self.lock = threading.Lock()
         self.target_digit = target_digit
 
-        # Inisialisasi Detektor Vision OpenCV
-        self.green_detector = GreenRingDetector(tolerance_px=20)
-        self.donut_detector = RedDonutDetector(tolerance_px=22)
-        self.kamikaze_detector = KamikazeDetector(target_digit=target_digit, tolerance_px=20)
+        # Inisialisasi Detektor Vision
+        self.green_detector = GreenRingDetector(tolerance_px=22)
+        self.donut_detector = RedDonutDetector(tolerance_px=25)
+        self.kamikaze_detector = KamikazeDetector(target_digit=target_digit, tolerance_px=22)
 
-        # Buffer Frame Mentah
+        # Buffer Frame
         self.frame_front: Optional[np.ndarray] = None
         self.frame_down: Optional[np.ndarray] = None
 
-        # Data Sensor Jarak LiDAR
+        # Jarak LiDAR
         self.lidar_front: float = 99.0
         self.lidar_down: float = 99.0
 
-        # Hasil Deteksi Terakhir
+        # Hasil Deteksi Terkini
         self.res_green: Optional[GreenCenteringResult] = None
         self.res_donut: Optional[RedDonutResult] = None
         self.res_kamikaze: Optional[KamikazeResult] = None
 
-        # Template Matching Tambahan untuk Digit 2 (Verifikasi Redundan)
-        self.tmpl_digit2 = self._init_template_digit2()
+        # Template Matching Digit 2
+        self.tmpl_digit2 = self._load_template_digit2()
 
-    def _init_template_digit2(self) -> np.ndarray:
-        tmpl_dir = os.path.join(SCRIPTS_DIR, "templates")
-        os.makedirs(tmpl_dir, exist_ok=True)
-        tmpl_path = os.path.join(tmpl_dir, "digit_2.png")
+    def _load_template_digit2(self) -> Optional[np.ndarray]:
+        tmpl_path = os.path.join(SCRIPTS_DIR, "templates", "digit_2.png")
         if os.path.exists(tmpl_path):
-            img = cv2.imread(tmpl_path, cv2.IMREAD_GRAYSCALE)
-            if img is not None:
-                return img
-        # Buat template sintetis jika belum ada
-        tmpl = np.full((70, 50), 255, dtype=np.uint8)
-        cv2.putText(tmpl, '2', (6, 58), cv2.FONT_HERSHEY_SIMPLEX, 2.0, 0, 5, cv2.LINE_AA)
-        cv2.imwrite(tmpl_path, tmpl)
-        return tmpl
+            return cv2.imread(tmpl_path, cv2.IMREAD_GRAYSCALE)
+        return None
 
     def _imgmsg_to_bgr(self, msg: Image) -> Optional[np.ndarray]:
         try:
@@ -138,7 +126,6 @@ class MissionVisionListener:
         if bgr is None:
             return
 
-        # Jalankan deteksi donat merah dan kamikaze pada frame depan
         res_d = self.donut_detector.detect(bgr, draw=True)
         res_k = self.kamikaze_detector.detect(bgr, target_digit=self.target_digit, draw=True)
 
@@ -152,7 +139,6 @@ class MissionVisionListener:
         if bgr is None:
             return
 
-        # Jalankan deteksi lingkaran hijau pada frame bawah
         res_g = self.green_detector.detect(bgr, draw=True)
 
         with self.lock:
@@ -171,7 +157,6 @@ class MissionVisionListener:
             with self.lock:
                 self.lidar_down = min(valid) if valid else 99.0
 
-    # Thread-safe getters
     def get_green(self) -> Optional[GreenCenteringResult]:
         with self.lock:
             return self.res_green
@@ -188,10 +173,6 @@ class MissionVisionListener:
         with self.lock:
             return self.lidar_front
 
-    def get_lidar_down(self) -> float:
-        with self.lock:
-            return self.lidar_down
-
     def get_annotated_frames(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         with self.lock:
             f_down = self.res_green.annotated_frame if self.res_green is not None else self.frame_down
@@ -200,12 +181,11 @@ class MissionVisionListener:
 
 
 # ==============================================================================
-# 2. SUBSISTEM KONTROL DRONE AUTOPILOT (MAVLINK)
+# 2. SUBSISTEM KONTROL DRONE AUTOPILOT (HIGH SPEED)
 # ==============================================================================
 class DroneController:
     """
-    Pengendali manuver terbang drone berbasis pymavlink.
-    Mendukung kontrol kecepatan translasi (body frame) dan rotasi yaw.
+    Kontrol manuver drone lincah dan berkecepatan tinggi berbasis MAVLink.
     """
     def __init__(self, koneksi: str = DEFAULT_KONEKSI):
         print("=" * 60)
@@ -228,10 +208,9 @@ class DroneController:
         self.armed: bool = False
         self.flightmode: str = "UNKNOWN"
 
-        # Minta stream data posisi (32) dan attitude (30) pada 20 Hz
-        self._minta_stream(32, 20)  # LOCAL_POSITION_NED
-        self._minta_stream(30, 20)  # ATTITUDE
-        time.sleep(1.0)
+        self._minta_stream(32, 25)  # LOCAL_POSITION_NED
+        self._minta_stream(30, 25)  # ATTITUDE
+        time.sleep(0.8)
         self.update()
 
     def _minta_stream(self, msg_id: int, hz: int):
@@ -241,8 +220,8 @@ class DroneController:
             msg_id, int(1e6 / hz), 0, 0, 0, 0, 0
         )
 
-    def update(self, timeout: float = 0.02):
-        """Membaca dan memperbarui status telemetri drone dari paket MAVLink."""
+    def update(self):
+        """Membaca telemetri drone non-blocking."""
         msg = self.m.recv_match(blocking=False)
         while msg is not None:
             t = msg.get_type()
@@ -267,21 +246,12 @@ class DroneController:
             self.update()
             if self.m.flightmode == mode:
                 return True
-            time.sleep(0.1)
+            time.sleep(0.05)
         return False
 
     def send_velocity_body(self, vx: float, vy: float, vz_up: float, yaw_rate: float = 0.0):
-        """
-        Mengirim perintah kecepatan dalam BODY FRAME:
-        vx > 0: Maju,      vx < 0: Mundur
-        vy > 0: Geser Kanan, vy < 0: Geser Kiri
-        vz_up > 0: Naik,   vz_up < 0: Turun
-        yaw_rate: Kecepatan putar sudut (rad/s, positif = putar kanan/CW)
-        """
-        # Dalam NED: vz positif adalah ke bawah (down), sehingga -vz_up membalik arah naik
+        """Mengirim kecepatan translasi dan rotasi (BODY FRAME)."""
         vz_ned = -vz_up
-
-        # type_mask: abaikan posisi (0,1,2), akselerasi (6,7,8), yaw (10). Aktifkan vel (3,4,5) dan yaw_rate (11).
         type_mask = 0b000111000111
         self.m.mav.set_position_target_local_ned_send(
             0, self.m.target_system, self.m.target_component,
@@ -294,81 +264,55 @@ class DroneController:
         )
 
     def move_timed(self, vx: float, vy: float, vz_up: float, detik: float, yaw_rate: float = 0.0):
-        """Mengirim kecepatan selama durasi tertentu dengan loop pembaruan status."""
         t_end = time.time() + detik
         while time.time() < t_end:
             self.send_velocity_body(vx, vy, vz_up, yaw_rate)
             self.update()
-            time.sleep(0.05)
+            time.sleep(0.04)
         self.send_velocity_body(0, 0, 0, 0)
 
-    def brake(self, detik: float = 1.0):
-        """Menghentikan pergerakan drone seketika (hover di tempat)."""
+    def brake(self, detik: float = 0.6):
         self.move_timed(0, 0, 0, detik)
 
     def takeoff_if_needed(self, tinggi: float = TINGGI_DEFAULT):
-        """Memastikan drone dalam kondisi terbang pada ketinggian target."""
         self.update()
         if not self.armed or (-self.pos_z < 0.35):
-            print(f"[*] Drone belum di udara (Armed: {self.armed}, Alt: {-self.pos_z:.2f}m).")
-            print("[*] Mengubah mode ke GUIDED & melakukan ARMing motor...")
+            print(f"[*] Drone belum di udara. Takeoff ke {tinggi:.2f} m...")
             self.set_mode('GUIDED')
-
-            # Force Arming
-            for attempt in range(1, 11):
+            for _ in range(5):
                 self.m.mav.command_long_send(
                     self.m.target_system, self.m.target_component,
                     mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0,
                     1, 21196, 0, 0, 0, 0, 0
                 )
-                time.sleep(0.5)
+                time.sleep(0.3)
                 self.update()
                 if self.armed:
-                    print(f"[OK] Drone berhasil di-ARM (Percobaan ke-{attempt}).")
                     break
 
-            print(f"[*] Mengirim perintah Takeoff ke ketinggian {tinggi:.2f} meter...")
             self.m.mav.command_long_send(
                 self.m.target_system, self.m.target_component,
                 mavlink.MAV_CMD_NAV_TAKEOFF, 0,
                 0, 0, 0, 0, 0, 0, tinggi
             )
 
-            t_end = time.time() + 20.0
-            while time.time() < t_end:
+            while -self.pos_z < tinggi * 0.85:
                 self.update()
-                current_alt = -self.pos_z
-                if current_alt >= tinggi * 0.85:
-                    print(f"[OK] Ketinggian target tercapai ({current_alt:.2f} m).")
-                    break
-                time.sleep(0.2)
-            self.brake(1.5)
-        else:
-            print(f"[OK] Drone sudah berada di udara (Altitude: {-self.pos_z:.2f} m).")
+                time.sleep(0.1)
+            print(f"[OK] Ketinggian take off tercapai ({-self.pos_z:.2f} m).")
+            self.brake(0.8)
 
-    def turn_to_yaw(self, target_yaw_deg: float, tolerance: float = 3.5, timeout: float = 8.0) -> bool:
-        """Memutar hadap drone (yaw) ke target sudut absolut secara tertutup."""
-        print(f"[*] Memutar drone ke Yaw: {target_yaw_deg:.1f}° ...")
-        t_end = time.time() + timeout
-
-        while time.time() < t_end:
+    def turn_to_yaw(self, target_yaw_deg: float, tolerance: float = 3.5, max_speed: float = 1.8) -> bool:
+        """Memutar hadap yaw drone dengan kecepatan 3x lebih lincah."""
+        while True:
             self.update()
-            # Hitung selisih sudut terkecil [-180 .. 180]
             err = (target_yaw_deg - self.yaw_deg + 180.0) % 360.0 - 180.0
-
             if abs(err) <= tolerance:
-                self.brake(0.4)
-                print(f"[OK] Yaw tercapai: {self.yaw_deg:.1f}° (Error: {err:.1f}°)")
+                self.brake(0.2)
                 return True
-
-            # Kontrol P untuk laju putar sudut yaw
-            yaw_rate_cmd = np.clip(err * 0.035, -0.65, 0.65)
+            yaw_rate_cmd = np.clip(err * 0.08, -max_speed, max_speed)
             self.send_velocity_body(0, 0, 0, yaw_rate=yaw_rate_cmd)
-            time.sleep(0.05)
-
-        self.brake(0.5)
-        print(f"[!] Timeout putar yaw. Posisi akhir: {self.yaw_deg:.1f}°")
-        return False
+            time.sleep(0.03)
 
     def land(self):
         print("\n[*] Mendaratkan drone...")
@@ -376,397 +320,318 @@ class DroneController:
 
 
 # ==============================================================================
-# 3. IMPLEMENTASI 10 TAHAP ALGORITMA SESUAI SKRIP_MISI3.MD
+# 3. IMPLEMENTASI 10 TAHAP ALGORITMA (KECEPATAN 3X, ZERO TIMEOUT)
 # ==============================================================================
 
-def tahap_1_cari_lingkaran_hijau(drone: DroneController, sensor: MissionVisionListener, timeout: float = 25.0) -> bool:
+def tahap_1_cari_lingkaran_hijau(drone: DroneController, sensor: MissionVisionListener):
     """
     TAHAP 1:
-    Setelah keluar dari terowongan, drone harus bergerak ke kiri (X negatif)
-    untuk mencari lingkaran hijau di kamera bawah.
+    Setelah keluar terowongan, drone meluncur cepat ke kiri (X negatif)
+    mencari lingkaran hijau secara kontinu (tanpa timeout) dengan vy = -1.65 m/s.
     """
     print("\n" + "=" * 65)
-    print(">>> [TAHAP 1] BERGERAK KE KIRI (X NEGATIF) MENCARI LINGKARAN HIJAU")
+    print(">>> [TAHAP 1] BERGERAK CEPAT KE KIRI (X NEGATIF) MENCARI LINGKARAN HIJAU")
+    print(">>> (Kecepatan 3x lipat: vy = -1.65 m/s | Deteksi Kontinu Tanpa Batas Waktu)")
     print("=" * 65)
 
     drone.update()
-    base_yaw = drone.yaw_deg
-    print(f"[*] Heading awal drone: {base_yaw:.1f}°")
-    print("[*] Bergerak geser ke kiri (vy = -0.55 m/s) sambil memindai kamera bawah...")
+    # Pastikan menghadap ke utara (90°)
+    drone.turn_to_yaw(90.0, tolerance=4.0)
 
-    t_start = time.time()
-    t_end = t_start + timeout
-
-    while time.time() < t_end:
+    step_counter = 0
+    while rclpy.ok():
         drone.update()
         green = sensor.get_green()
 
-        # Deteksi lingkaran hijau pada kamera bawah
-        if green is not None and green.detected and green.area >= 180.0:
+        # Deteksi terus menerus sampai lingkaran hijau ditemukan
+        if green is not None and green.detected and green.area >= 120.0:
             print(f"\n[OK] LINGKARAN HIJAU DITEMUKAN!")
-            print(f"     -> Area: {green.area:.0f} px | Posisi: cx={green.cx}, cy={green.cy}")
-            print(f"     -> Offset: dx={green.dx:+d}, dy={green.dy:+d}")
-            drone.brake(1.0)
-            return True
+            print(f"     -> Posisi: ({green.cx}, {green.cy}) | Area: {green.area:.0f} px")
+            drone.brake(0.5)
+            break
 
-        # Bergerak ke kiri (vy < 0) dengan sedikit maju (vx > 0) jika perlu menjaga jalur
-        drone.send_velocity_body(vx=0.08, vy=-0.55, vz_up=0.0, yaw_rate=0.0)
-        time.sleep(0.06)
-
-    print("[!] Timeout Tahap 1: Lingkaran hijau belum terdeteksi setelah bergerak ke kiri.")
-    drone.brake(1.0)
-    return False
+        # Meluncur cepat ke kiri (vy = -1.65 m/s)
+        drone.send_velocity_body(vx=0.15, vy=-1.65, vz_up=0.0, yaw_rate=0.0)
+        time.sleep(0.04)
+        step_counter += 1
+        if step_counter % 25 == 0:
+            print("  [*] Masih memindai kamera bawah mencari lingkaran hijau...")
 
 
-def tahap_2_centering_lingkaran_hijau(drone: DroneController, sensor: MissionVisionListener, timeout: float = 20.0) -> bool:
+def tahap_2_centering_lingkaran_hijau(drone: DroneController, sensor: MissionVisionListener):
     """
     TAHAP 2:
-    Ketika mendeteksi lingkaran hijau, drone seharusnya melakukan centering
-    posisi X dan Y nya terhadap lingkaran hijau.
+    Centering posisi X dan Y terhadap lingkaran hijau (kecepatan respon 3x, kontinu).
     """
     print("\n" + "=" * 65)
     print(">>> [TAHAP 2] CENTERING POSISI X DAN Y TERHADAP LINGKARAN HIJAU")
+    print(">>> (P-Controller Cepat: Max Speed 1.0 m/s | Deteksi Kontinu)")
     print("=" * 65)
 
-    t_start = time.time()
-    t_end = t_start + timeout
     steady_count = 0
 
-    while time.time() < t_end:
+    while rclpy.ok():
         drone.update()
         green = sensor.get_green()
 
         if green is None or not green.detected:
-            # Jika sesaat hilang, berhenti dan cari kembali
             drone.send_velocity_body(0, 0, 0)
-            time.sleep(0.1)
+            time.sleep(0.04)
             continue
 
         dx = green.dx
         dy = green.dy
 
-        # Pada kamera bawah:
-        # dx > 0 (target di sebelah kanan frame) -> drone geser kanan (vy > 0)
-        # dx < 0 (target di sebelah kiri frame)  -> drone geser kiri (vy < 0)
-        # dy < 0 (target di bagian atas frame / depan) -> drone maju (vx > 0)
-        # dy > 0 (target di bagian bawah frame / belakang) -> drone mundur (vx < 0)
-        vx_cmd = np.clip(-0.0018 * dy, -0.35, 0.35)
-        vy_cmd = np.clip(0.0018 * dx, -0.35, 0.35)
+        # P-Gain 3x lebih agresif untuk centering kilat
+        vx_cmd = np.clip(-0.0055 * dy, -1.0, 1.0)
+        vy_cmd = np.clip(0.0055 * dx, -1.0, 1.0)
 
-        # Cek apakah sudah tepat di tengah (toleransi +-20 pixel)
         if abs(dx) <= 22 and abs(dy) <= 22:
             steady_count += 1
             drone.send_velocity_body(0, 0, 0)
-            if steady_count >= 12:  # Stabil selama ~0.7 detik
-                print(f"[OK] Centering lingkaran hijau SUKSES! (dx={dx:+d}, dy={dy:+d}, Radius={green.radius:.1f})")
-                drone.brake(1.5)
-                return True
+            if steady_count >= 5:  # Stabil seketika (~0.2 detik)
+                print(f"[OK] Centering Lingkaran Hijau SELESAI! (dx={dx:+d}, dy={dy:+d})")
+                drone.brake(0.6)
+                break
         else:
             steady_count = 0
             drone.send_velocity_body(vx_cmd, vy_cmd, 0.0)
 
-        time.sleep(0.05)
-
-    print("[!] Batas waktu centering tercapai. Mengunci posisi terbaik dan melanjutkan.")
-    drone.brake(1.0)
-    return True
+        time.sleep(0.04)
 
 
-def tahap_3_deteksi_dan_centering_donat_merah(drone: DroneController, sensor: MissionVisionListener, timeout: float = 25.0) -> bool:
+def tahap_3_deteksi_dan_centering_donat_merah(drone: DroneController, sensor: MissionVisionListener):
     """
     TAHAP 3:
-    Setelah melakukan centering pada lingkaran hijau, drone mendeteksi lingkaran merah,
-    dimana drone bisa naik dan turun untuk mencari lingkaran merah tersebut.
+    Mendeteksi lingkaran merah (bisa naik/turun mencari donat) dan centering
+    terhadap titik pusat lubang donat secara kontinu tanpa batas waktu.
     """
     print("\n" + "=" * 65)
-    print(">>> [TAHAP 3] DETEKSI & CENTERING DONAT MERAH (NAIK / TURUN)")
+    print(">>> [TAHAP 3] DETEKSI & CENTERING TITIK PUSAT DONAT MERAH")
+    print(">>> (Naik / Turun Otomatis | Kecepatan Penyesuaian 3x | Kontinu)")
     print("=" * 65)
 
-    # Pastikan drone menghadap lurus ke depan (menghadap donat merah di utara / Y positif ~ 90°)
-    drone.turn_to_yaw(90.0, tolerance=4.0)
-    drone.brake(1.0)
+    # Hadapkan ke arah donat merah (Yaw 90°)
+    drone.turn_to_yaw(90.0, tolerance=3.5)
+    drone.brake(0.3)
 
-    t_start = time.time()
-    t_end = t_start + timeout
     steady_count = 0
     search_phase = 0
     search_timer = time.time()
 
-    while time.time() < t_end:
+    while rclpy.ok():
         drone.update()
         donut = sensor.get_donut()
 
         if donut is not None and donut.detected:
-            # Titik tengah lubang donat berhasil terdeteksi
             dx = donut.dx
             dy = donut.dy
 
-            # Koreksi horizontal (vy) dan vertikal (vz_up)
-            # dy > 0: lubang di bawah tengah frame -> drone harus TURUN (vz_up < 0)
-            # dy < 0: lubang di atas tengah frame  -> drone harus NAIK (vz_up > 0)
-            vy_cmd = np.clip(0.0015 * dx, -0.28, 0.28)
-            vz_cmd = np.clip(-0.0018 * dy, -0.28, 0.28)
+            # Koreksi cepat 3x lipat
+            vy_cmd = np.clip(0.0045 * dx, -0.85, 0.85)
+            vz_cmd = np.clip(-0.0055 * dy, -0.85, 0.85)
 
-            # Cek apakah sudah sejajar dengan lubang donat
             if abs(dx) <= 25 and abs(dy) <= 25:
                 steady_count += 1
-                drone.send_velocity_body(0.05, 0, 0)  # Perlahan mendekat
-                if steady_count >= 10:
-                    hole_txt = "Lubang Dalam (Inner Hole)" if donut.has_hole else "Pusat Donat"
-                    print(f"[OK] Centering Donat Merah SUKSES! ({hole_txt})")
-                    print(f"     -> cx={donut.cx}, cy={donut.cy} | dx={dx:+d}, dy={dy:+d} | Radius={donut.outer_radius:.1f}")
-                    drone.brake(1.0)
-                    return True
+                drone.send_velocity_body(0.2, 0, 0)
+                if steady_count >= 5:
+                    hole_str = "Lubang Tembus" if donut.has_hole else "Titik Pusat"
+                    print(f"[OK] Centering Donat Merah SELESAI! ({hole_str}: dx={dx:+d}, dy={dy:+d})")
+                    drone.brake(0.4)
+                    break
             else:
                 steady_count = 0
-                drone.send_velocity_body(vx=0.08, vy=vy_cmd, vz_up=vz_cmd)
+                drone.send_velocity_body(vx=0.20, vy=vy_cmd, vz_up=vz_cmd)
 
         else:
-            # Sesuai instruksi: Drone bisa NAIK dan TURUN untuk mencari lingkaran merah
             steady_count = 0
             now = time.time()
-            if now - search_timer > 2.5:
+            if now - search_timer > 1.2:
                 search_phase = (search_phase + 1) % 4
                 search_timer = now
 
+            # Naik / Turun cepat (0.75 m/s) mencari donat
             if search_phase == 0:
-                print("[*] Donat merah belum tampak: Menyesuaikan ketinggian (Naik perlahan)...")
-                drone.send_velocity_body(0, 0, vz_up=0.25)
+                print("  [*] Mencari donat: Naik vertikal (0.75 m/s)...")
+                drone.send_velocity_body(0, 0, vz_up=0.75)
             elif search_phase == 1:
-                print("[*] Donat merah belum tampak: Menyesuaikan ketinggian (Turun perlahan)...")
-                drone.send_velocity_body(0, 0, vz_up=-0.25)
+                print("  [*] Mencari donat: Turun vertikal (-0.75 m/s)...")
+                drone.send_velocity_body(0, 0, vz_up=-0.75)
             elif search_phase == 2:
-                print("[*] Donat merah belum tampak: Menjaga posisi stabil...")
-                drone.send_velocity_body(0, 0, vz_up=0.0)
+                drone.send_velocity_body(vx=0.3, vy=0, vz_up=0)
             else:
-                print("[*] Donat merah belum tampak: Maju perlahan mendekati zona...")
-                drone.send_velocity_body(vx=0.15, vy=0, vz_up=0.0)
+                drone.send_velocity_body(0, 0, vz_up=0)
 
-        time.sleep(0.06)
-
-    print("[!] Timeout centering donat merah. Mengunci jalur tengah dan melanjutkan.")
-    drone.brake(1.0)
-    return True
+        time.sleep(0.04)
 
 
-def tahap_4_menembus_donat_merah(drone: DroneController, sensor: MissionVisionListener, durasi: float = 3.8):
+def tahap_4_menembus_donat_merah(drone: DroneController):
     """
     TAHAP 4:
-    Setelah mendeteksi dan centering terhadap titik pusat lingkaran merah tersebut,
-    drone melaju ke depan tepat di tengah lingkaran merah karena berbentuk donat.
+    Melaju cepat ke depan tepat di tengah lubang donat merah (vx = 4.0 m/s, 3x lebih cepat).
     """
     print("\n" + "=" * 65)
-    print(">>> [TAHAP 4] MELAJU KE DEPAN TEPAT DI TENGAH LUBANG DONAT MERAH")
+    print(">>> [TAHAP 4] MELAJU CEPAT MENEMBUS LUBANG DONAT MERAH")
+    print(">>> (Kecepatan 3x lipat: vx = 4.0 m/s)")
     print("=" * 65)
 
-    print(f"[*] Meluncur maju dengan kecepatan vx = 1.35 m/s menembus donat (durasi: {durasi} detik)...")
-    t_end = time.time() + durasi
-
+    print("[*] SPRINT MAJU menembus donat merah...")
+    t_end = time.time() + 1.4  # Menempuh ~5.6 meter pada 4.0 m/s
     while time.time() < t_end:
+        drone.send_velocity_body(vx=4.0, vy=0.0, vz_up=0.0, yaw_rate=0.0)
         drone.update()
-        # Terbang lurus ke depan dengan ketinggian stabil
-        drone.send_velocity_body(vx=1.35, vy=0.0, vz_up=0.0, yaw_rate=0.0)
-        time.sleep(0.05)
+        time.sleep(0.03)
 
-    drone.brake(1.5)
-    print("[OK] Drone berhasil menembus donat merah dan tiba di area sasaran berikutnya!")
+    drone.brake(0.8)
+    print("[OK] Drone telah menembus donat merah dengan sukses!")
 
 
-def tahap_5_dan_6_scanning_yaw_bullseye(
+def tahap_5_hingga_10_kunci_dan_kamikaze_nomor_2(
     drone: DroneController,
     sensor: MissionVisionListener,
-    target_digit: int = 2
-) -> Dict[str, Any]:
-    """
-    TAHAP 5 & 6 & 7 & 8:
-    Drone mendeteksi angka pada Bulls Eye dengan melakukan yaw +- 60 derajat,
-    sehingga dapat melihat semua Bulls Eye di depannya menggunakan OpenCV (tanpa YOLO).
-    Koordinat dan heading nomor 2 didapatkan dan di-keep (disimpan).
-    """
-    print("\n" + "=" * 65)
-    print(f">>> [TAHAP 5 & 6] SCANNING YAW +-60 DERAJAT MEMINDAI BULLSEYE #{target_digit}")
-    print("=" * 65)
-
-    drone.update()
-    base_yaw = drone.yaw_deg
-    yaw_kiri = (base_yaw + 60.0) % 360.0
-    yaw_kanan = (base_yaw - 60.0 + 360.0) % 360.0
-
-    print(f"[*] Sudut hadap awal: {base_yaw:.1f}°")
-    print(f"[*] Rencana pemindaian: {base_yaw:.1f}° -> {yaw_kiri:.1f}° (+60°) -> {yaw_kanan:.1f}° (-60°) -> Kunci Target")
-
-    best_target = {
-        "found": False,
-        "yaw": base_yaw,
-        "cx": 320,
-        "cy": 240,
-        "area": 0.0,
-        "score": 0.0,
-        "dx": 0,
-        "dy": 0
-    }
-
-    def inspect_current_frame():
-        nonlocal best_target
-        res_k = sensor.get_kamikaze()
-        if res_k is None:
-            return
-
-        # Periksa apakah target nomor 2 terdeteksi (baik melalui locked_target atau daftar all_targets)
-        candidates = [t for t in res_k.all_targets if t.digit == target_digit]
-        if res_k.locked_target and res_k.locked_target.digit == target_digit:
-            candidates.append(res_k.locked_target)
-
-        for c in candidates:
-            # Bandingkan skor dan ukuran area
-            quality = c.area * (1.0 - abs(c.dx) / 640.0)
-            if quality > best_target["area"]:
-                best_target["found"] = True
-                best_target["yaw"] = drone.yaw_deg
-                best_target["cx"] = c.cx
-                best_target["cy"] = c.cy
-                best_target["area"] = quality
-                best_target["score"] = c.confidence
-                best_target["dx"] = c.dx
-                best_target["dy"] = c.dy
-                print(f"  [+] Target #{target_digit} TERDETEKSI pada Yaw {drone.yaw_deg:.1f}°! (Pixel: {c.cx}, {c.cy} | Area: {c.area:.0f})")
-
-    # 1. Sweep ke KIRI (+60 derajat)
-    print("\n[*] [Sweep 1/2] Menyapu ke kiri (+60°)...")
-    drone.turn_to_yaw(yaw_kiri, tolerance=5.0, timeout=5.0)
-    for _ in range(15):
-        drone.update()
-        inspect_current_frame()
-        time.sleep(0.08)
-
-    # 2. Sweep ke KANAN (-60 derajat dari base)
-    print("\n[*] [Sweep 2/2] Menyapu ke kanan (-60°)...")
-    drone.turn_to_yaw(yaw_kanan, tolerance=5.0, timeout=8.0)
-    for _ in range(15):
-        drone.update()
-        inspect_current_frame()
-        time.sleep(0.08)
-
-    # 3. Evaluasi hasil penyimpanan koordinat (TAHAP 8)
-    print("\n" + "=" * 65)
-    print(f">>> [TAHAP 7 & 8] HASIL PEMINDAIAN NOMOR {target_digit}")
-    print("=" * 65)
-
-    if best_target["found"]:
-        print(f"[OK] Target #{target_digit} BERHASIL DI-KEEP!")
-        print(f"     -> Sudut Hadap Optimal (Yaw): {best_target['yaw']:.1f}°")
-        print(f"     -> Koordinat Pusat Sasaran : ({best_target['cx']}, {best_target['cy']})")
-        print(f"     -> Bobot Kualitas Deteksi  : {best_target['area']:.0f}")
-    else:
-        print(f"[!] Target #{target_digit} tidak tertangkap selama sapuan +-60°. Menggunakan heading default {base_yaw:.1f}°.")
-        best_target["yaw"] = base_yaw
-
-    return best_target
-
-
-def tahap_9_dan_10_kamikaze_target_nomor_2(
-    drone: DroneController,
-    sensor: MissionVisionListener,
-    best_target: Dict[str, Any],
     target_digit: int = 2
 ):
     """
-    TAHAP 9 & 10:
-    9. Drone menghadap yaw pitch ke arah nomor 2 di tengah-tengahnya.
-    10. Drone terbang cepat hingga menabrak nomor 2.
+    TAHAP 5 s.d. 10:
+    Setelah menyelesaikan obstacle donat merah:
+    - Drone LANGSUNG menghadap ke angka nomor 2 (Yaw 90° lurus ke depan tempat target 2 berada).
+    - Kamera depan mendeteksi nomor 2 secara kontinu tanpa timeout.
+    - Centering Yaw & Pitch tepat ke titik tengah angka 2.
+    - Kamikaze Sprint: melaju cepat 3x lipat (vx = 7.0 m/s) menabrak nomor 2.
     """
     print("\n" + "=" * 65)
-    print(f">>> [TAHAP 9] MENGHADAP YAW & PITCH/KETINGGIAN TEPAT KE TENGAH NOMOR {target_digit}")
+    print(f">>> [TAHAP 5 s.d. 10] MENGHADAP & KAMIKAZE TARGET NOMOR {target_digit}")
+    print(">>> (Hadap Langsung ke Sasaran 2 | Zero Timeout | Kecepatan Tabrak 7.0 m/s)")
     print("=" * 65)
 
-    # 1. Hadapkan drone ke sudut yaw optimal tempat nomor 2 terlihat
-    target_yaw = best_target["yaw"]
-    drone.turn_to_yaw(target_yaw, tolerance=3.0, timeout=6.0)
-    drone.brake(0.8)
+    # 1. LANGSUNG MENGHADAP KE TARGET NOMOR 2 (Lurus ke depan, Yaw = 90.0°)
+    print(f"[*] Menghadapkan drone tepat ke arah target nomor {target_digit} (Yaw: 90.0°)...")
+    drone.turn_to_yaw(90.0, tolerance=2.5, max_speed=1.8)
+    drone.brake(0.4)
 
-    # 2. Penyelarasan halus secara live (Fine visual servoing yaw & pitch)
-    print(f"[*] Melakukan alignment visual live ke titik tengah nomor {target_digit}...")
-    t_align_end = time.time() + 4.0
+    # 2. DETEKSI BERKELANJUTAN TANPA TIMEOUT HINGGA NOMOR 2 TERKUNCI
+    print(f"[*] Mendeteksi target #{target_digit} secara kontinu di kamera depan...")
+    locked_target_data = None
+    step_cnt = 0
 
-    while time.time() < t_align_end:
+    while rclpy.ok():
         drone.update()
         res_k = sensor.get_kamikaze()
 
-        if res_k is not None and res_k.locked_target and res_k.locked_target.digit == target_digit:
-            lt = res_k.locked_target
-            dx = lt.dx
-            dy = lt.dy
+        if res_k is not None:
+            # Cari sasaran nomor 2 dari deteksi HOG+SVM atau Bullseye Merah
+            matching = [t for t in res_k.all_targets if t.digit == target_digit]
+            if res_k.locked_target and res_k.locked_target.digit == target_digit:
+                matching.append(res_k.locked_target)
 
-            yaw_rate_cmd = np.clip(0.0022 * dx, -0.45, 0.45)
-            vz_cmd = np.clip(-0.0018 * dy, -0.25, 0.25)
-
-            if abs(dx) <= 18 and abs(dy) <= 18:
-                print(f"[OK] Kunci target sempurna! Target #{target_digit} berada tepat di tengah frame (dx={dx:+d}, dy={dy:+d}).")
+            if matching:
+                best = max(matching, key=lambda t: t.area)
+                locked_target_data = best
+                print(f"[OK] TARGET #{target_digit} TERDETEKSI & TERKUNCI!")
+                print(f"     -> Koordinat: ({best.cx}, {best.cy}) | Offset: dx={best.dx:+d}, dy={best.dy:+d}")
                 break
-            drone.send_velocity_body(vx=0.1, vy=0, vz_up=vz_cmd, yaw_rate=yaw_rate_cmd)
+
+        # Jika belum tampak jelas, lakukan penyelarasan ketinggian / mikro-adjust
+        step_cnt += 1
+        if step_cnt % 30 == 0:
+            print(f"  [*] Memindai kamera depan mencari Bulls Eye #{target_digit}...")
+        drone.send_velocity_body(vx=0.1, vy=0, vz_up=0)
+        time.sleep(0.04)
+
+    # 3. CENTERING YAW & PITCH/KETINGGIAN TEPAT DI TITIK TENGAH NOMOR 2
+    print(f"\n[*] Menyelaraskan Yaw & Ketinggian presisi ke titik tengah nomor {target_digit}...")
+    steady_aim = 0
+
+    while rclpy.ok():
+        drone.update()
+        res_k = sensor.get_kamikaze()
+
+        target_now = None
+        if res_k is not None:
+            matching = [t for t in res_k.all_targets if t.digit == target_digit]
+            if res_k.locked_target and res_k.locked_target.digit == target_digit:
+                matching.append(res_k.locked_target)
+            if matching:
+                target_now = max(matching, key=lambda t: t.area)
+
+        if target_now is not None:
+            dx = target_now.dx
+            dy = target_now.dy
+
+            yaw_rate_cmd = np.clip(0.006 * dx, -1.2, 1.2)
+            vz_cmd = np.clip(-0.005 * dy, -0.6, 0.6)
+
+            if abs(dx) <= 20 and abs(dy) <= 20:
+                steady_aim += 1
+                if steady_aim >= 4:
+                    print(f"[OK] RETICLE TERKUNCI SEMPURNA PADA TARGET #{target_digit}! (dx={dx:+d}, dy={dy:+d})")
+                    break
+            else:
+                steady_aim = 0
+            drone.send_velocity_body(vx=0.15, vy=0, vz_up=vz_cmd, yaw_rate=yaw_rate_cmd)
         else:
-            drone.send_velocity_body(0, 0, 0)
+            drone.send_velocity_body(vx=0.1, vy=0, vz_up=0)
 
-        time.sleep(0.05)
+        time.sleep(0.03)
 
-    drone.brake(0.5)
+    drone.brake(0.3)
 
-    # 3. TAHAP 10: TERBANG CEPAT HINGGA MENABRAK NOMOR 2
+    # 4. TAHAP 10: KAMIKAZE CHARGE (TERBANG CEPAT 7.0 M/S HINGGA MENABRAK NOMOR 2)
     print("\n" + "=" * 65)
-    print(f">>> [TAHAP 10] KAMIKAZE CHARGE: TERBANG CEPAT MENABRAK TARGET NOMOR {target_digit}!")
+    print(f"🚀🚀 KAMIKAZE SPRINT: TERBANG PENUH KILAT MENABRAK NOMOR {target_digit}! 🚀🚀")
+    print(">>> Kecepatan: vx = 7.0 m/s (3x Lebih Cepat) | Tracking Aktif Menuju Tabrakan")
     print("=" * 65)
 
-    KECEPATAN_TABRAK = 2.4  # m/s
-    DURASI_MAX = 7.0        # detik
-    t_charge_start = time.time()
-    t_charge_end = t_charge_start + DURASI_MAX
+    KECEPATAN_TABRAK = 7.0  # 3x lebih cepat dari sebelumnya (2.4 m/s -> 7.0 m/s)
 
-    while time.time() < t_charge_end:
+    while rclpy.ok():
         drone.update()
         jarak_lidar = sensor.get_lidar_front()
 
-        # Cek tabrakan via sensor LiDAR depan
-        if jarak_lidar <= 0.38:
-            print(f"\n💥💥 IMPACT TERDETEKSI! Jarak LiDAR depan: {jarak_lidar:.2f} m 💥💥")
+        # Deteksi tabrakan via sensor jarak LiDAR depan
+        if jarak_lidar <= 0.45:
+            print(f"\n💥💥💥 IMPACT TABRAKAN TERJADI! Jarak LiDAR depan: {jarak_lidar:.2f} m 💥💥💥")
             drone.send_velocity_body(vx=KECEPATAN_TABRAK, vy=0, vz_up=0)
-            time.sleep(0.3)
+            time.sleep(0.2)
             break
 
-        # Koreksi lintasan visual secara real-time selama meluncur
+        # Visual tracking aktif agar hidung drone tetap presisi mengarah ke nomor 2 saat melesat
         res_k = sensor.get_kamikaze()
         yaw_trim = 0.0
         vz_trim = 0.0
 
-        if res_k is not None and res_k.locked_target and res_k.locked_target.digit == target_digit:
-            lt = res_k.locked_target
-            yaw_trim = np.clip(0.0015 * lt.dx, -0.35, 0.35)
-            vz_trim = np.clip(-0.0012 * lt.dy, -0.20, 0.20)
+        if res_k is not None:
+            matching = [t for t in res_k.all_targets if t.digit == target_digit]
+            if res_k.locked_target and res_k.locked_target.digit == target_digit:
+                matching.append(res_k.locked_target)
+            if matching:
+                t_cur = max(matching, key=lambda t: t.area)
+                yaw_trim = np.clip(0.0035 * t_cur.dx, -0.8, 0.8)
+                vz_trim = np.clip(-0.0030 * t_cur.dy, -0.5, 0.5)
 
         drone.send_velocity_body(vx=KECEPATAN_TABRAK, vy=0, vz_up=vz_trim, yaw_rate=yaw_trim)
-        time.sleep(0.04)
+        time.sleep(0.03)
 
-    # Selesai
-    drone.brake(1.0)
+    drone.brake(0.5)
     print("\n" + "=" * 65)
-    print(f"🎉 MISI 3 SUKSES! DRONE TELAH BERHASIL MENABRAK SASARAN NOMOR {target_digit}!")
+    print(f"🎉🎉 MISI 3 SUKSES PENUH! DRONE BERHASIL MENABRAK SASARAN NOMOR {target_digit}! 🎉🎉")
     print("=" * 65)
 
 
 # ==============================================================================
-# 4. FUNGSI UTAMA & EKSEKUSI MISI
+# 4. FUNGSI UTAMA & EKSEKUSI CLI
 # ==============================================================================
 def run_teleport_preset(preset_key: str):
-    """Menjalankan helper teleport.py jika diminta via argumen CLI."""
     teleport_py = os.path.join(SCRIPTS_DIR, "teleport.py")
     if not os.path.exists(teleport_py):
         return
 
     coords_map = {
-        "1": (13.0, 5.0, 1.3, 90.0),   # Di luar terowongan
-        "2": (3.3, 11.5, 1.3, 90.0),   # Di atas lingkaran hijau
-        "3": (3.3, 9.5, 1.2, 90.0),    # Di depan donat merah
-        "4": (3.3, 9.5, 1.2, 90.0),    # Menembus donat
-        "5": (-2.0, 21.0, 1.4, 90.0),  # Di depan Bulls Eye
+        "1": (13.0, 5.0, 1.3, 90.0),
+        "2": (3.3, 11.5, 1.3, 90.0),
+        "3": (3.3, 9.5, 1.2, 90.0),
+        "4": (3.3, 9.5, 1.2, 90.0),
+        "5": (3.3, 16.5, 1.4, 90.0),   # Tepat setelah donat merah, menghadap sasaran 2
     }
     if preset_key in coords_map:
         x, y, z, yaw = coords_map[preset_key]
@@ -777,7 +642,7 @@ def run_teleport_preset(preset_key: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Misi 3: Navigasi Lengkap & Kamikaze Target 2")
+    parser = argparse.ArgumentParser(description="Misi 3: Navigasi Cepat & Kamikaze Target 2 (Zero Timeout)")
     parser.add_argument("--koneksi", default=DEFAULT_KONEKSI, help="Koneksi MAVLink (default: udpin:127.0.0.1:14560)")
     parser.add_argument("--step", type=int, default=1, choices=[1, 2, 3, 4, 5],
                         help="Mulai dari tahap tertentu: 1=Terowongan, 2=Lingkaran Hijau, 3=Donat Merah, 4=Tembus Donat, 5=Kamikaze Bulls Eye")
@@ -787,34 +652,30 @@ def main():
     args = parser.parse_args()
 
     print("=================================================================")
-    print("  GAMAFORCE - MISI 3: NAVIGASI DONAT & KAMIKAZE TARGET BULLSEYE  ")
+    print("  GAMAFORCE - MISI 3: HIGH-SPEED NAVIGATION & BULLSEYE KAMIKAZE  ")
     print("=================================================================")
     print(f"[*] Target Sasaran Kamikaze: Nomor {args.target}")
     print(f"[*] Tahap Awal Eksekusi    : Tahap {args.step}")
 
-    # 1. Teleport awal jika diaktifkan
     if args.teleport:
         run_teleport_preset(str(args.step))
 
-    # 2. Inisialisasi ROS 2 Node & Sensor Listener
     rclpy.init()
     listener = MissionVisionListener(target_digit=args.target)
     node = Node("misi3_executive_node")
 
-    node.create_subscription(Image, "/camera_down", listener.on_camera_down, 5)
-    node.create_subscription(Image, "/camera_front", listener.on_camera_front, 5)
-    node.create_subscription(LaserScan, "/lidar_front", listener.on_lidar_front, 5)
-    node.create_subscription(LaserScan, "/lidar_down", listener.on_lidar_down, 5)
+    node.create_subscription(Image, "/camera_down", listener.on_camera_down, 10)
+    node.create_subscription(Image, "/camera_front", listener.on_camera_front, 10)
+    node.create_subscription(LaserScan, "/lidar_front", listener.on_lidar_front, 10)
+    node.create_subscription(LaserScan, "/lidar_down", listener.on_lidar_down, 10)
 
     ros_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     ros_thread.start()
     print("[OK] Subsistem ROS 2 Kamera & LiDAR aktif.")
 
-    # 3. Inisialisasi Koneksi Drone Autopilot
     drone = DroneController(koneksi=args.koneksi)
     drone.takeoff_if_needed(TINGGI_DEFAULT)
 
-    # 4. Thread Visualisasi Opsional (OpenCV GUI jika display tersedia)
     has_display = bool(os.environ.get("DISPLAY")) and not args.headless
     gui_running = [True]
 
@@ -829,7 +690,7 @@ def main():
                 if cv2.waitKey(20) & 0xFF in (27, ord('q')):
                     break
             else:
-                time.sleep(0.05)
+                time.sleep(0.04)
         cv2.destroyAllWindows()
 
     if has_display:
@@ -837,7 +698,7 @@ def main():
         gui_th.start()
 
     try:
-        # EKSEKUSI TAHAP BERURUTAN
+        # Eksekusi tahap berurutan tanpa timeout
         if args.step <= 1:
             tahap_1_cari_lingkaran_hijau(drone, listener)
 
@@ -848,11 +709,10 @@ def main():
             tahap_3_deteksi_dan_centering_donat_merah(drone, listener)
 
         if args.step <= 4:
-            tahap_4_menembus_donat_merah(drone, listener)
+            tahap_4_menembus_donat_merah(drone)
 
         if args.step <= 5:
-            best_target_2 = tahap_5_dan_6_scanning_yaw_bullseye(drone, listener, target_digit=args.target)
-            tahap_9_dan_10_kamikaze_target_nomor_2(drone, listener, best_target_2, target_digit=args.target)
+            tahap_5_hingga_10_kunci_dan_kamikaze_nomor_2(drone, listener, target_digit=args.target)
 
     except KeyboardInterrupt:
         print("\n[!] Misi dihentikan oleh pengguna (Ctrl+C).")
@@ -871,4 +731,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

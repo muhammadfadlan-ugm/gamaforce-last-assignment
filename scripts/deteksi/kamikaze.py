@@ -206,8 +206,73 @@ class KamikazeDetector:
 
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
 
-        # Segmentasi kandidat angka:
-        # Gunakan adaptive thresholding (karena angka berwarna gelap di latar bulls eye yang lebih terang)
+        # 1. Deteksi Kandidat Berbasis Warna Bulls Eye (Target 1: Biru, Target 2: Merah, Target 3: Kuning)
+        hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+        candidates: List[DetectedTarget] = []
+
+        # Masking Target 2 (Bulls Eye Merah)
+        m_red1 = cv2.inRange(hsv, np.array([0, 80, 50]), np.array([12, 255, 255]))
+        m_red2 = cv2.inRange(hsv, np.array([160, 80, 50]), np.array([180, 255, 255]))
+        mask_red = cv2.bitwise_or(m_red1, m_red2)
+        kernel_morph = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_OPEN, kernel_morph)
+
+        red_contours, _ = cv2.findContours(mask_red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for r_cnt in red_contours:
+            r_area = cv2.contourArea(r_cnt)
+            if r_area >= 120.0:
+                (rcx_f, rcy_f), r_radius = cv2.minEnclosingCircle(r_cnt)
+                rcx, rcy = int(rcx_f), int(rcy_f)
+                rx, ry, rw, rh = cv2.boundingRect(r_cnt)
+
+                # Verifikasi digit di dalam area Bulls Eye Merah
+                digit_label = 2  # Target 2 secara spesifik adalah Bulls Eye Merah
+                
+                # Coba klasifikasi dengan HOG+SVM di dalam ROI tengah
+                roi = gray[max(0, ry):min(h, ry+rh), max(0, rx):min(w, rx+rw)]
+                if roi.size > 0:
+                    _, roi_bin = cv2.threshold(roi, 75, 255, cv2.THRESH_BINARY_INV)
+                    inner_cnts, _ = cv2.findContours(roi_bin, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                    for icnt in inner_cnts:
+                        ibx, iby, ibw, ibh = cv2.boundingRect(icnt)
+                        if 6 <= ibw <= rw * 0.7 and 10 <= ibh <= rh * 0.8:
+                            dcrop = roi_bin[iby:iby+ibh, ibx:ibx+ibw]
+                            md = max(ibw, ibh) + 6
+                            sq = np.zeros((md, md), dtype=np.uint8)
+                            sq[(md-ibh)//2:(md-ibh)//2+ibh, (md-ibw)//2:(md-ibw)//2+ibw] = dcrop
+                            sq_norm = cv2.resize(sq, self.win_size)
+                            desc = self.hog.compute(sq_norm).reshape(1, -1)
+                            _, preds = self.svm.predict(desc)
+                            pred_val = int(preds[0][0])
+                            if pred_val in (1, 2, 3):
+                                digit_label = pred_val
+                                break
+
+                rdx = rcx - center_frame_x
+                rdy = rcy - center_frame_y
+                rnorm_dx = float(rdx) / float(center_frame_x) if center_frame_x > 0 else 0.0
+                rnorm_dy = float(rdy) / float(center_frame_y) if center_frame_y > 0 else 0.0
+                rdist = float(np.hypot(rdx, rdy))
+                ris_aligned = (abs(rdx) <= self.tolerance_px and abs(rdy) <= self.tolerance_px)
+
+                candidates.append(
+                    DetectedTarget(
+                        digit=digit_label,
+                        confidence=0.95,
+                        bbox=(rx, ry, rw, rh),
+                        cx=rcx,
+                        cy=rcy,
+                        area=float(r_area),
+                        dx=rdx,
+                        dy=rdy,
+                        norm_dx=rnorm_dx,
+                        norm_dy=rnorm_dy,
+                        error_dist=rdist,
+                        is_aligned=ris_aligned
+                    )
+                )
+
+        # 2. Segmentasi kandidat angka global (Adaptive Thresholding)
         thresh_inv = cv2.adaptiveThreshold(
             gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY_INV, 25, 9
@@ -216,14 +281,12 @@ class KamikazeDetector:
         # Cari kontur kandidat (gunakan RETR_TREE agar angka di dalam lingkaran bulls eye terdeteksi)
         contours, _ = cv2.findContours(thresh_inv, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-        candidates: List[DetectedTarget] = []
-
         for cnt in contours:
             x, y, bw, bh = cv2.boundingRect(cnt)
             area = cv2.contourArea(cnt)
 
-            # Filter ukuran dan proporsi geometri karakter angka
-            if area < 60 or bw < 8 or bh < 14:
+            # Filter ukuran dan proporsi geometri karakter angka (sensitivitas tinggi untuk jarak jauh)
+            if area < 15 or bw < 6 or bh < 10:
                 continue
             if bw > w * 0.45 or bh > h * 0.60:
                 continue
