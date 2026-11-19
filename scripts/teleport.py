@@ -28,36 +28,31 @@ PRESETS = {
 }
 
 
-def check_gazebo_service(service_name: str) -> bool:
-    """Mengecek apakah Gazebo Sim dan service set_pose sedang aktif."""
+def is_gazebo_running() -> bool:
+    """Mengecek apakah proses Gazebo Sim sedang aktif di sistem secara instan."""
     try:
-        cmd = ["gz", "service", "-i", "-s", service_name, "--timeout", "800"]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
-        if "gz.msgs.Pose" in res.stdout:
-            return True
-        return False
+        res = subprocess.run(["pgrep", "-f", "gz sim"], capture_output=True, text=True, timeout=1)
+        return len(res.stdout.strip()) > 0
     except Exception:
-        return False
+        return True
 
 
 def teleport(x: float, y: float, z: float, yaw_deg: float = 90.0) -> bool:
     """Mengirim pesan set_pose ke Gazebo Sim via gz service."""
-    service_name = f"/world/{WORLD_NAME}/set_pose"
+    # 1. Cek instan apakah proses Gazebo berjalan
+    if not is_gazebo_running():
+        print(f"\n[!] ERROR: Proses Gazebo Sim tidak terdeteksi berjalan di sistem!")
+        print("    -> Jalankan Terminal 1 terlebih dahulu: ./terminal1.sh (atau ./run_all.sh)")
+        return False
 
     print(f"\n[+] Memindahkan drone ke -> X: {x:.2f}, Y: {y:.2f}, Z: {z:.2f} | Yaw: {yaw_deg:.1f}° ...")
-
-    # 1. Cek apakah Gazebo aktif
-    if not check_gazebo_service(service_name):
-        print(f"[!] ERROR: Gazebo Sim ({WORLD_NAME}) tidak terdeteksi berjalan!")
-        print("    -> Pastikan Terminal 1 (Gazebo) sudah dijalankan terlebih dahulu:")
-        print("       ./terminal1.sh (atau ./run_all.sh)")
-        return False
 
     # 2. Konversi sudut yaw derajat ke orientasi quaternion (rotasi sumbu Z)
     yaw_rad = math.radians(yaw_deg)
     qz = math.sin(yaw_rad / 2.0)
     qw = math.cos(yaw_rad / 2.0)
 
+    service_name = f"/world/{WORLD_NAME}/set_pose"
     req_payload = (
         f'name: "{MODEL_NAME}", '
         f'position: {{x: {x:.3f}, y: {y:.3f}, z: {z:.3f}}}, '
@@ -68,12 +63,12 @@ def teleport(x: float, y: float, z: float, yaw_deg: float = 90.0) -> bool:
         "gz", "service", "-s", service_name,
         "--reqtype", "gz.msgs.Pose",
         "--reptype", "gz.msgs.Boolean",
-        "--timeout", "2000",
+        "--timeout", "5000",
         "--req", req_payload
     ]
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=4)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
         if "data: true" in res.stdout:
             print(f"[OK] Drone berhasil di-teleport ke ({x:.2f}, {y:.2f}, {z:.2f})!")
             return True
@@ -85,7 +80,7 @@ def teleport(x: float, y: float, z: float, yaw_deg: float = 90.0) -> bool:
         print("    source /opt/ros/jazzy/setup.bash")
         return False
     except subprocess.TimeoutExpired:
-        print("[!] Timeout: Gazebo tidak merespons perintah set_pose.")
+        print("[!] Timeout: Gazebo tidak merespons dalam 8 detik. Pastikan simulasi tidak dalam keadaan pause.")
         return False
 
 
