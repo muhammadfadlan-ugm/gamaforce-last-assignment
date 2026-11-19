@@ -52,3 +52,7 @@ worlds/models/
 *~
 .DS_Store
 Thumbs.db
+
+
+# skrip
+scripts/skrip_*
