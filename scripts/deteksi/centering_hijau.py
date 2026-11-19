@@ -109,19 +109,10 @@ class GreenRingDetector:
                     best_cnt = cnt
                     best_circularity = circularity
 
-        # Jika tidak ditemukan kontur yang memenuhi syarat sirkularitas, fallback ke kontur area terbesar
-        if best_cnt is None and contours:
-            largest = max(contours, key=cv2.contourArea)
-            largest_area = cv2.contourArea(largest)
-            if largest_area >= self.min_area:
-                best_cnt = largest
-                best_area = largest_area
-                perimeter = cv2.arcLength(largest, True)
-                best_circularity = 4 * np.pi * (largest_area / (perimeter * perimeter)) if perimeter > 0 else 0.0
-
+        # Pastikan kontur yang terdeteksi memenuhi syarat bentuk lingkaran/ring
         annotated = frame_bgr.copy() if draw else None
 
-        if best_cnt is not None:
+        if best_cnt is not None and best_circularity >= self.min_circularity:
             # Hitung titik tengah menggunakan Spatial Moments
             M = cv2.moments(best_cnt)
             if M["m00"] > 0:
