@@ -56,13 +56,13 @@ class RedDonutDetector:
     """
     def __init__(
         self,
-        lower_red1: Tuple[int, int, int] = (0, 80, 50),
-        upper_red1: Tuple[int, int, int] = (10, 255, 255),
-        lower_red2: Tuple[int, int, int] = (160, 80, 50),
+        lower_red1: Tuple[int, int, int] = (0, 50, 40),
+        upper_red1: Tuple[int, int, int] = (15, 255, 255),
+        lower_red2: Tuple[int, int, int] = (165, 50, 40),
         upper_red2: Tuple[int, int, int] = (180, 255, 255),
-        min_outer_area: float = 800.0,
-        tolerance_px: int = 30,
-        min_pass_radius: float = 60.0,
+        min_outer_area: float = 400.0,
+        tolerance_px: int = 25,
+        min_pass_radius: float = 50.0,
     ):
         self.lower_red1 = np.array(lower_red1, dtype=np.uint8)
         self.upper_red1 = np.array(upper_red1, dtype=np.uint8)
@@ -145,22 +145,11 @@ class RedDonutDetector:
         if has_hole:
             # Titik tengah diambil dari pusat lubang donat
             hole_cnt = contours[best_hole_idx]
-            M_hole = cv2.moments(hole_cnt)
-            if M_hole["m00"] > 0:
-                cx = int(M_hole["m10"] / M_hole["m00"])
-                cy = int(M_hole["m01"] / M_hole["m00"])
-            else:
-                (hcx_f, hcy_f), _ = cv2.minEnclosingCircle(hole_cnt)
-                cx, cy = int(hcx_f), int(hcy_f)
-            (_, _), inner_radius = cv2.minEnclosingCircle(hole_cnt)
+            (hcx_f, hcy_f), inner_radius = cv2.minEnclosingCircle(hole_cnt)
+            cx, cy = int(round(hcx_f)), int(round(hcy_f))
         else:
-            # Fallback ke titik tengah kontur luar
-            M_outer = cv2.moments(outer_cnt)
-            if M_outer["m00"] > 0:
-                cx = int(M_outer["m10"] / M_outer["m00"])
-                cy = int(M_outer["m01"] / M_outer["m00"])
-            else:
-                cx, cy = int(outer_cx_f), int(outer_cy_f)
+            # Fallback ke titik tengah lingkaran luar donat (geometric center)
+            cx, cy = int(round(outer_cx_f)), int(round(outer_cy_f))
 
         # 6. Hitung error offset terhadap pusat frame kamera
         dx = cx - center_frame_x

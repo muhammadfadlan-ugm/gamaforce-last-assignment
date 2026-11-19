@@ -417,19 +417,24 @@ def tahap_2_centering_lingkaran_hijau(drone: DroneController, sensor: MissionVis
 def tahap_3_deteksi_dan_centering_donat_merah(drone: DroneController, sensor: MissionVisionListener):
     """
     TAHAP 3:
-    Mendeteksi lingkaran merah (bisa naik/turun mencari donat) dan centering
-    terhadap titik pusat lubang donat secara kontinu tanpa batas waktu.
+    Mendeteksi lingkaran merah dan centering titik tengah lubang donat:
+    - Drone melayang di tempat (vx = 0.0) dan melakukan tracking ketinggian naik/turun
+      terlebih dahulu hingga donat merah tertangkap jelas di kamera depan.
+    - Melakukan visual servoing centering (mengatur ketinggian Z dan lateral Y)
+      hingga titik tengah kamera depan sejajar sempurna dengan titik tengah donat merah.
     """
     print("\n" + "=" * 65)
-    print(">>> [TAHAP 3] DETEKSI & CENTERING TITIK PUSAT DONAT MERAH")
-    print(">>> (Naik / Turun Otomatis | Kecepatan Penyesuaian 3x | Kontinu)")
+    print(">>> [TAHAP 3] TRACKING NAIK-TURUN & CENTERING TITIK PUSAT DONAT MERAH")
+    print(">>> (Hover di Tempat vx=0.0 | Tracking Ketinggian Naik-Turun | Centering Lubang)")
     print("=" * 65)
 
-    drone.brake(0.3)
+    drone.brake(0.4)
 
     steady_count = 0
     search_phase = 0
     search_timer = time.time()
+
+    print("[*] Melayang di tempat (vx=0.0). Memulai tracking naik-turun mencari donat merah...")
 
     while rclpy.ok():
         drone.update()
@@ -439,40 +444,51 @@ def tahap_3_deteksi_dan_centering_donat_merah(drone: DroneController, sensor: Mi
             dx = donut.dx
             dy = donut.dy
 
-            # Koreksi cepat 3x lipat
-            vy_cmd = np.clip(0.0045 * dx, -0.85, 0.85)
-            vz_cmd = np.clip(-0.0055 * dy, -0.85, 0.85)
+            # Visual Servoing Centering:
+            # dy > 0: donat di bawah tengah kamera -> turun (vz_up < 0)
+            # dy < 0: donat di atas tengah kamera  -> naik  (vz_up > 0)
+            # dx > 0: donat di kanan kamera       -> geser kanan (vy > 0)
+            # dx < 0: donat di kiri kamera        -> geser kiri  (vy < 0)
+            vy_cmd = np.clip( 0.0045 * dx, -0.65, 0.65)
+            vz_cmd = np.clip(-0.0055 * dy, -0.75, 0.75)
 
-            if abs(dx) <= 25 and abs(dy) <= 25:
+            # PENTING: vx = 0.0 (jangan maju dulu sebelum tengah kamera sejajar dengan donat!)
+            if abs(dx) <= 22 and abs(dy) <= 22:
                 steady_count += 1
-                drone.send_velocity_body(0.2, 0, 0, yaw_rate=0.0)
-                if steady_count >= 5:
-                    hole_str = "Lubang Tembus" if donut.has_hole else "Titik Pusat"
-                    print(f"[OK] Centering Donat Merah SELESAI! ({hole_str}: dx={dx:+d}, dy={dy:+d})")
+                drone.send_velocity_body(0.0, 0.0, 0.0, yaw_rate=0.0)
+                if steady_count >= 5:  # Stabil di tengah selama ~0.2 detik
+                    hole_str = "Lubang Tembus" if donut.has_hole else "Pusat Donat"
+                    print(f"\n[OK] CENTERING DONAT MERAH SELESAI!")
+                    print(f"     -> Status: {hole_str} Terkunci | Offset: dx={dx:+d}, dy={dy:+d} | Ketinggian: {-drone.pos_z:.2f} m")
                     drone.brake(0.4)
                     break
             else:
                 steady_count = 0
-                drone.send_velocity_body(vx=0.20, vy=vy_cmd, vz_up=vz_cmd, yaw_rate=0.0)
+                drone.send_velocity_body(vx=0.0, vy=vy_cmd, vz_up=vz_cmd, yaw_rate=0.0)
+
+            if steady_count == 0 and int(time.time() * 5) % 5 == 0:
+                print(f"  [TRACKING DONAT] dx={dx:+3d}, dy={dy:+3d} | vz_cmd={vz_cmd:+.2f} m/s, vy_cmd={vy_cmd:+.2f} m/s | Alt={-drone.pos_z:.2f}m")
 
         else:
             steady_count = 0
+            alt = -drone.pos_z
+
+            # Tracking ketinggian naik-turun mencari donat merah (donat berada di Z ~ 2.6 m)
+            # Jika drone masih rendah (Z < 2.5 m), naik ke atas mencari donat
+            if alt < 2.70:
+                vz_search = 0.55
+                search_label = "Naik vertikal mencari donat (Z ~ 2.6 m)"
+            else:
+                vz_search = -0.45
+                search_label = "Turun vertikal mencari donat"
+
             now = time.time()
-            if now - search_timer > 1.2:
-                search_phase = (search_phase + 1) % 4
+            if now - search_timer > 0.8:
+                print(f"  [*] {search_label}... (Ketinggian saat ini: {alt:.2f} m)")
                 search_timer = now
 
-            # Naik / Turun cepat (0.75 m/s) mencari donat
-            if search_phase == 0:
-                print("  [*] Mencari donat: Naik vertikal (0.75 m/s)...")
-                drone.send_velocity_body(0, 0, vz_up=0.75, yaw_rate=0.0)
-            elif search_phase == 1:
-                print("  [*] Mencari donat: Turun vertikal (-0.75 m/s)...")
-                drone.send_velocity_body(0, 0, vz_up=-0.75, yaw_rate=0.0)
-            elif search_phase == 2:
-                drone.send_velocity_body(vx=0.3, vy=0, vz_up=0, yaw_rate=0.0)
-            else:
-                drone.send_velocity_body(0, 0, vz_up=0, yaw_rate=0.0)
+            # Pastikan drone tidak melaju maju (vx = 0.0) saat mencari
+            drone.send_velocity_body(vx=0.0, vy=0.0, vz_up=vz_search, yaw_rate=0.0)
 
         time.sleep(0.04)
 
@@ -480,22 +496,39 @@ def tahap_3_deteksi_dan_centering_donat_merah(drone: DroneController, sensor: Mi
 def tahap_4_menembus_donat_merah(drone: DroneController):
     """
     TAHAP 4:
-    Melaju cepat ke depan tepat di tengah lubang donat merah (vx = 4.0 m/s, 3x lebih cepat).
+    Melaju cepat ke depan tepat di tengah lubang donat merah (vx = 3.5 m/s),
+    lalu melambat dan berhenti setelah melewati donat untuk tracking sasaran Bulls Eye.
     """
     print("\n" + "=" * 65)
-    print(">>> [TAHAP 4] MELAJU CEPAT MENEMBUS LUBANG DONAT MERAH")
-    print(">>> (Kecepatan 3x lipat: vx = 4.0 m/s)")
+    print(">>> [TAHAP 4] MELAJU KEDEPAN MENEMBUS LUBANG DONAT MERAH")
+    print(">>> (Kecepatan Tinggi: vx = 3.5 m/s | Berhenti Setelah Melewati Donat)")
     print("=" * 65)
 
-    print("[*] SPRINT MAJU menembus donat merah...")
-    t_end = time.time() + 1.4  # Menempuh ~5.6 meter pada 4.0 m/s
-    while time.time() < t_end:
-        drone.send_velocity_body(vx=4.0, vy=0.0, vz_up=0.0, yaw_rate=0.0)
+    print("[*] SPRINT MAJU menembus lubang donat merah...")
+    # Menempuh jarak ~6.8 meter pada 3.5 m/s (dari Y ~ 12.0 ke seberang donat di Y ~ 18.8)
+    t_end = time.time() + 2.0
+    while time.time() < t_end and rclpy.ok():
+        drone.send_velocity_body(vx=3.5, vy=0.0, vz_up=0.0, yaw_rate=0.0)
         drone.update()
         time.sleep(0.03)
 
-    drone.brake(0.8)
-    print("[OK] Drone telah menembus donat merah dengan sukses!")
+    # Melambat dan berhenti sempurna setelah menembus donat sesuai permintaan algoritma
+    print("[*] Selesai melewati donat merah. Melambat dan berhenti total...")
+    drone.brake(1.0)
+    print("[OK] Drone telah melewati donat merah dengan aman dan berhenti.")
+
+    # Menyesuaikan ketinggian turun sedikit agar sejajar dengan target Bulls Eye (Z ~ 1.5 m)
+    print("[*] Menyesuaikan ketinggian ke level target Bulls Eye (Z ~ 1.5 m)...")
+    t_descend = time.time() + 1.8
+    while time.time() < t_descend and rclpy.ok():
+        drone.update()
+        if -drone.pos_z <= 1.55:
+            break
+        drone.send_velocity_body(vx=0.0, vy=0.0, vz_up=-0.50, yaw_rate=0.0)
+        time.sleep(0.04)
+
+    drone.brake(0.4)
+    print(f"[OK] Posisi stabil di seberang donat merah (Ketinggian: {-drone.pos_z:.2f} m).")
 
 
 def tahap_5_hingga_10_kunci_dan_kamikaze_nomor_2(
@@ -543,7 +576,7 @@ def tahap_5_hingga_10_kunci_dan_kamikaze_nomor_2(
         step_cnt += 1
         if step_cnt % 30 == 0:
             print(f"  [*] Memindai kamera depan mencari Bulls Eye #{target_digit}...")
-        drone.send_velocity_body(vx=0.15, vy=0, vz_up=0)
+        drone.send_velocity_body(vx=0.15, vy=0.0, vz_up=0.0, yaw_rate=0.0)
         time.sleep(0.04)
 
     # 3. CENTERING YAW & PITCH/KETINGGIAN TEPAT DI TITIK TENGAH NOMOR 2
@@ -578,7 +611,7 @@ def tahap_5_hingga_10_kunci_dan_kamikaze_nomor_2(
                 steady_aim = 0
             drone.send_velocity_body(vx=0.15, vy=0, vz_up=vz_cmd, yaw_rate=yaw_rate_cmd)
         else:
-            drone.send_velocity_body(vx=0.1, vy=0, vz_up=0)
+            drone.send_velocity_body(vx=0.10, vy=0.0, vz_up=0.0, yaw_rate=0.0)
 
         time.sleep(0.03)
 
@@ -637,9 +670,9 @@ def run_teleport_preset(preset_key: str):
     coords_map = {
         "1": (13.0, 5.0, 1.3, 90.0),
         "2": (3.3, 11.5, 1.3, 90.0),
-        "3": (3.3, 9.5, 1.2, 90.0),
-        "4": (3.3, 9.5, 1.2, 90.0),
-        "5": (3.3, 16.5, 1.4, 90.0),   # Tepat setelah donat merah, menghadap sasaran 2
+        "3": (3.3, 12.0, 1.4, 90.0),   # Di atas lingkaran hijau, siap tracking donat merah
+        "4": (3.3, 14.0, 2.6, 90.0),   # Tepat di depan lubang donat merah (Z ~ 2.6 m)
+        "5": (3.3, 18.5, 1.5, 90.0),   # Tepat setelah donat merah, siap tracking target 2
     }
     if preset_key in coords_map:
         x, y, z, yaw = coords_map[preset_key]
