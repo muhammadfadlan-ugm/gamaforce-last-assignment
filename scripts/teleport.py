@@ -28,14 +28,36 @@ PRESETS = {
 }
 
 
+def check_gazebo_service(service_name: str) -> bool:
+    """Mengecek apakah Gazebo Sim dan service set_pose sedang aktif."""
+    try:
+        cmd = ["gz", "service", "-i", "-s", service_name, "--timeout", "800"]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+        if "gz.msgs.Pose" in res.stdout:
+            return True
+        return False
+    except Exception:
+        return False
+
+
 def teleport(x: float, y: float, z: float, yaw_deg: float = 90.0) -> bool:
     """Mengirim pesan set_pose ke Gazebo Sim via gz service."""
-    # Konversi sudut yaw derajat ke orientasi quaternion (hanya rotasi sumbu Z)
+    service_name = f"/world/{WORLD_NAME}/set_pose"
+
+    print(f"\n[+] Memindahkan drone ke -> X: {x:.2f}, Y: {y:.2f}, Z: {z:.2f} | Yaw: {yaw_deg:.1f}° ...")
+
+    # 1. Cek apakah Gazebo aktif
+    if not check_gazebo_service(service_name):
+        print(f"[!] ERROR: Gazebo Sim ({WORLD_NAME}) tidak terdeteksi berjalan!")
+        print("    -> Pastikan Terminal 1 (Gazebo) sudah dijalankan terlebih dahulu:")
+        print("       ./terminal1.sh (atau ./run_all.sh)")
+        return False
+
+    # 2. Konversi sudut yaw derajat ke orientasi quaternion (rotasi sumbu Z)
     yaw_rad = math.radians(yaw_deg)
     qz = math.sin(yaw_rad / 2.0)
     qw = math.cos(yaw_rad / 2.0)
 
-    service_name = f"/world/{WORLD_NAME}/set_pose"
     req_payload = (
         f'name: "{MODEL_NAME}", '
         f'position: {{x: {x:.3f}, y: {y:.3f}, z: {z:.3f}}}, '
@@ -46,26 +68,24 @@ def teleport(x: float, y: float, z: float, yaw_deg: float = 90.0) -> bool:
         "gz", "service", "-s", service_name,
         "--reqtype", "gz.msgs.Pose",
         "--reptype", "gz.msgs.Boolean",
-        "--timeout", "3000",
+        "--timeout", "2000",
         "--req", req_payload
     ]
 
-    print(f"\n[+] Memindahkan drone ke -> X: {x:.2f}, Y: {y:.2f}, Z: {z:.2f} | Yaw: {yaw_deg:.1f}° ...")
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=4)
         if "data: true" in res.stdout:
             print(f"[OK] Drone berhasil di-teleport ke ({x:.2f}, {y:.2f}, {z:.2f})!")
             return True
         else:
-            print(f"[!] Gagal teleportasi. Pastikan Gazebo ({WORLD_NAME}) sedang berjalan.")
-            if res.stderr:
-                print(f"    Detail error: {res.stderr.strip()}")
+            print(f"[!] Gagal teleportasi:\n{res.stderr or res.stdout}")
             return False
     except FileNotFoundError:
-        print("[!] Perintah 'gz' tidak ditemukan. Pastikan ROS 2 / Gazebo environment sudah dimuat.")
+        print("[!] Perintah 'gz' tidak ditemukan. Pastikan ROS 2 / Gazebo environment sudah dimuat:")
+        print("    source /opt/ros/jazzy/setup.bash")
         return False
     except subprocess.TimeoutExpired:
-        print("[!] Timeout: Gazebo tidak merespons dalam 5 detik.")
+        print("[!] Timeout: Gazebo tidak merespons perintah set_pose.")
         return False
 
 
@@ -80,7 +100,12 @@ def interactive_menu():
         print(" [0] Keluar")
         print("-" * 55)
 
-        choice = input("Pilih lokasi (0-8): ").strip()
+        try:
+            choice = input("Pilih lokasi (0-8): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nKeluar.")
+            break
+
         if choice == "0":
             print("Keluar.")
             break
@@ -97,6 +122,8 @@ def interactive_menu():
                 teleport(x, y, z, yaw)
             except ValueError:
                 print("[!] Error: Masukan harus berupa angka.")
+            except (KeyboardInterrupt, EOFError):
+                print("\nBatal input.")
         else:
             print("[!] Pilihan tidak valid.")
 
@@ -114,7 +141,7 @@ def main():
 
     args = parser.parse_args()
 
-    # 1. Jika koordinat diberikan lewat argumen posisional: python3 teleport.py 3.3 12.0 1.5 [90]
+    # 1. Jika koordinat diberikan lewat argumen posisional
     if len(args.coords) >= 3:
         x = args.coords[0]
         y = args.coords[1]
@@ -122,15 +149,17 @@ def main():
         yaw = args.coords[3] if len(args.coords) >= 4 else 90.0
         teleport(x, y, z, yaw)
 
-    # 2. Jika koordinat diberikan lewat flag: python3 teleport.py -x 3.3 -y 12.0 -z 1.5
+    # 2. Jika koordinat diberikan lewat flag
     elif args.x is not None and args.y is not None and args.z is not None:
         teleport(args.x, args.y, args.z, args.yaw)
 
     # 3. Tanpa argumen -> Buka menu interaktif
     else:
-        interactive_menu()
+        try:
+            interactive_menu()
+        except KeyboardInterrupt:
+            print("\nKeluar.")
 
 
 if __name__ == '__main__':
     main()
-
