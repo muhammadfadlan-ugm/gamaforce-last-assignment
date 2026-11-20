@@ -91,6 +91,7 @@ def jalankan_ros():
     node.create_subscription(LaserScan, '/lidar_back', lidar_belakang_callback, 10)
     node.create_subscription(LaserScan, '/lidar_up', lidar_atas_callback, 10)
     node.create_subscription(Image, '/camera_front', camera_callback, 10)
+    node.create_subscription(Image, '/camera_down', camera_callback, 10)
     print("[ROS 2] Semua Sensor LiDAR 1D & Kamera siap.")
     rclpy.spin(node)
 
@@ -467,13 +468,13 @@ def misi():
     print("\n[Tahap 13] Terbang menurun untuk melewati rintangan...")
     waktu_mulai = time.time()
     while time.time() - waktu_mulai < 25.0:
-            if jarak_depan < 0.5 and jarak_bawah < 0.4:
+            if jarak_depan < 0.4 and jarak_bawah < 0.4:
                 print(f"tembok TERDETEKSI ({jarak_bawah:.2f}m)! Berhenti.")
                 move_at_vel(0, 0, 0, 1.5)
                 break
             else:
                 vx = 0.3 if jarak_depan < 2.5 else 1.0
-                vz = -0.3 if jarak_bawah < 2.0 else 1.0
+                vz = -0.22 if jarak_bawah < 2.0 else 1.0
                 move_at_vel(vx, 0, vz, 0.1)
     print("\n[Tahap 14] Terbang naik untuk melewati rintangan...")
     waktu_mulai = time.time()
@@ -489,7 +490,7 @@ def misi():
         
     waktu_mulai = time.time()
     while time.time() - waktu_mulai < 25.0:
-        if jarak_kiri > 7.0 and jarak_kanan > 7.0:
+        if jarak_atas > 5.0 :
             print(f"tembok Hilang ({jarak_kiri:.2f}m)! Berhenti.")
             move_at_vel(0, 0, 0, 1.5)
             break
