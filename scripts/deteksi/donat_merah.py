@@ -60,7 +60,7 @@ class RedDonutDetector:
         upper_red1: Tuple[int, int, int] = (15, 255, 255),
         lower_red2: Tuple[int, int, int] = (165, 50, 40),
         upper_red2: Tuple[int, int, int] = (180, 255, 255),
-        min_outer_area: float = 400.0,
+        min_outer_area: float = 2000.0,
         tolerance_px: int = 25,
         min_pass_radius: float = 50.0,
     ):

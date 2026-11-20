@@ -228,14 +228,30 @@ class KamikazeDetector:
                 # Verifikasi digit di dalam area Bulls Eye Merah
                 digit_label = 2  # Target 2 secara spesifik adalah Bulls Eye Merah
                 
-                # Coba klasifikasi dengan HOG+SVM di dalam ROI tengah
+                # Coba cari kontur digit di dalam ROI tengah Bulls Eye
+                digit_bbox = (rx, ry, rw, rh)
+                digit_cx, digit_cy = rcx, rcy
+                digit_found = False
+
                 roi = gray[max(0, ry):min(h, ry+rh), max(0, rx):min(w, rx+rw)]
                 if roi.size > 0:
-                    _, roi_bin = cv2.threshold(roi, 75, 255, cv2.THRESH_BINARY_INV)
+                    _, roi_bin = cv2.threshold(roi, 85, 255, cv2.THRESH_BINARY_INV)
                     inner_cnts, _ = cv2.findContours(roi_bin, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                    
+                    best_inner_area = 0.0
                     for icnt in inner_cnts:
                         ibx, iby, ibw, ibh = cv2.boundingRect(icnt)
-                        if 6 <= ibw <= rw * 0.7 and 10 <= ibh <= rh * 0.8:
+                        iarea = cv2.contourArea(icnt)
+                        # Verifikasi bentuk proporsional karakter angka di dalam bulls eye
+                        if 6 <= ibw <= rw * 0.75 and 10 <= ibh <= rh * 0.85 and iarea >= 15:
+                            if iarea > best_inner_area:
+                                best_inner_area = iarea
+                                digit_bbox = (rx + ibx, ry + iby, ibw, ibh)
+                                digit_cx = rx + ibx + ibw // 2
+                                digit_cy = ry + iby + ibh // 2
+                                digit_found = True
+
+                            # Cek prediksi HOG+SVM
                             dcrop = roi_bin[iby:iby+ibh, ibx:ibx+ibw]
                             md = max(ibw, ibh) + 6
                             sq = np.zeros((md, md), dtype=np.uint8)
@@ -246,10 +262,9 @@ class KamikazeDetector:
                             pred_val = int(preds[0][0])
                             if pred_val in (1, 2, 3):
                                 digit_label = pred_val
-                                break
 
-                rdx = rcx - center_frame_x
-                rdy = rcy - center_frame_y
+                rdx = digit_cx - center_frame_x
+                rdy = digit_cy - center_frame_y
                 rnorm_dx = float(rdx) / float(center_frame_x) if center_frame_x > 0 else 0.0
                 rnorm_dy = float(rdy) / float(center_frame_y) if center_frame_y > 0 else 0.0
                 rdist = float(np.hypot(rdx, rdy))
@@ -259,10 +274,10 @@ class KamikazeDetector:
                     DetectedTarget(
                         digit=digit_label,
                         confidence=0.95,
-                        bbox=(rx, ry, rw, rh),
-                        cx=rcx,
-                        cy=rcy,
-                        area=float(r_area),
+                        bbox=digit_bbox,
+                        cx=digit_cx,
+                        cy=digit_cy,
+                        area=float(digit_bbox[2] * digit_bbox[3] if digit_found else r_area),
                         dx=rdx,
                         dy=rdy,
                         norm_dx=rnorm_dx,
@@ -461,13 +476,21 @@ class KamikazeDetector:
         # 3. Highlight locked target & garis vektor error
         if locked is not None:
             tcx, tcy = locked.cx, locked.cy
+            bx, by, bw, bh = locked.bbox
             vec_color = (0, 255, 0) if locked.is_aligned else (0, 255, 255)
 
-            # Target bullseye reticle
-            cv2.circle(img, (tcx, tcy), 12, vec_color, 2)
-            cv2.circle(img, (tcx, tcy), 3, vec_color, -1)
+            # Bounding box sasaran angka dengan aksen tebal
+            cv2.rectangle(img, (bx, by), (bx + bw, by + bh), vec_color, 2)
+            cv2.putText(img, f"BOX #{locked.digit} [{bw}x{bh}]", (bx, max(18, by - 6)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, vec_color, 1, cv2.LINE_AA)
 
-            # Vektor garis error dari tengah frame ke target
+            # Titik pusat box target (Target Center Point)
+            cv2.circle(img, (tcx, tcy), 12, vec_color, 2)
+            cv2.circle(img, (tcx, tcy), 4, (0, 255, 255), -1)
+            cv2.putText(img, f"Pusat: ({tcx},{tcy})", (tcx + 8, tcy + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 255), 1, cv2.LINE_AA)
+
+            # Vektor garis error dari tengah frame ke titik pusat angka
             cv2.arrowedLine(img, (fx, fy), (tcx, tcy), vec_color, 2, tipLength=0.15)
 
             # Banner status
