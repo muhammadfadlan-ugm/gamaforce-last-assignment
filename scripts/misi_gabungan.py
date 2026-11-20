@@ -474,7 +474,7 @@ def misi():
                 break
             else:
                 vx = 0.3 if jarak_depan < 2.5 else 1.0
-                vz = -0.22 if jarak_bawah < 2.0 else 1.0
+                vz = -0.3 if jarak_bawah < 2.0 else 1.0
                 move_at_vel(vx, 0, vz, 0.1)
     print("\n[Tahap 14] Terbang naik untuk melewati rintangan...")
     waktu_mulai = time.time()
