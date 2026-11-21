@@ -24,6 +24,7 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import SingleThreadedExecutor
 from sensor_msgs.msg import Image, LaserScan
 
 # Pastikan modul deteksi terdeteksi
@@ -261,6 +262,16 @@ class SensorListener:
         with self.lock:
             return self.lidar_down
 
+    def get_frame_front(self) -> Optional[np.ndarray]:
+        """Mengambil salinan frame mentah terbaru dari kamera depan."""
+        with self.lock:
+            return self.frame_front.copy() if self.frame_front is not None else None
+
+    def get_frame_down(self) -> Optional[np.ndarray]:
+        """Mengambil salinan frame mentah terbaru dari kamera bawah."""
+        with self.lock:
+            return self.frame_down.copy() if self.frame_down is not None else None
+
     def get_annotated_frames(self) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         with self.lock:
             f_down = self.res_green.annotated_frame if self.res_green is not None else self.frame_down
@@ -278,11 +289,12 @@ class SensorListener:
 # ------------------------------------------------------------------------------
 _global_sensor: Optional[SensorListener] = None
 _global_node: Optional[Node] = None
+_global_executor: Optional[SingleThreadedExecutor] = None
 _global_thread: Optional[threading.Thread] = None
 
 def get_sensor(target_digit: int = 2) -> SensorListener:
     """Mengembalikan instance SensorListener tunggal dan mengaktifkan node ROS 2 di background."""
-    global _global_sensor, _global_node, _global_thread
+    global _global_sensor, _global_node, _global_executor, _global_thread
     if not rclpy.ok():
         rclpy.init()
 
@@ -299,7 +311,9 @@ def get_sensor(target_digit: int = 2) -> SensorListener:
         _global_node.create_subscription(LaserScan, "/lidar_up", _global_sensor.on_lidar_up, 10)
         _global_node.create_subscription(LaserScan, "/lidar_down", _global_sensor.on_lidar_down, 10)
 
-        _global_thread = threading.Thread(target=rclpy.spin, args=(_global_node,), daemon=True)
+        _global_executor = SingleThreadedExecutor()
+        _global_executor.add_node(_global_node)
+        _global_thread = threading.Thread(target=_global_executor.spin, daemon=True)
         _global_thread.start()
         print("[OK] Core SensorListener ROS 2 aktif (6 LiDAR + 2 Kamera OpenCV Hub).")
 
