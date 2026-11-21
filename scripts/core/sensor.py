@@ -25,6 +25,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image, LaserScan
 
 # Pastikan modul deteksi terdeteksi
@@ -106,6 +107,17 @@ class SensorListener:
             pass
         return None
 
+    def _bgr_to_imgmsg(self, img: np.ndarray, header=None) -> Image:
+        msg = Image()
+        if header is not None:
+            msg.header = header
+        msg.height, msg.width = img.shape[:2]
+        msg.encoding = 'bgr8'
+        msg.is_bigendian = False
+        msg.step = msg.width * 3
+        msg.data = img.tobytes()
+        return msg
+
     def on_camera_front(self, msg: Image):
         bgr = self._imgmsg_to_bgr(msg)
         if bgr is None:
@@ -134,6 +146,12 @@ class SensorListener:
             self.res_kamikaze = res_k
 
         # Teruskan stream hasil olah citra OpenCV ke Web Dashboard (baca_semua_data.py)
+        if _pub_cam_front_ann is not None and annotated_out is not None:
+            try:
+                _pub_cam_front_ann.publish(self._bgr_to_imgmsg(annotated_out, msg.header))
+            except Exception:
+                pass
+
         if data_hub is not None and annotated_out is not None:
             try:
                 ret, jpeg = cv2.imencode('.jpg', annotated_out, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
@@ -158,6 +176,12 @@ class SensorListener:
             self.res_green = res_g
 
         # Teruskan stream hasil olah citra OpenCV ke Web Dashboard (baca_semua_data.py)
+        if _pub_cam_down_ann is not None and annotated_out is not None:
+            try:
+                _pub_cam_down_ann.publish(self._bgr_to_imgmsg(annotated_out, msg.header))
+            except Exception:
+                pass
+
         if data_hub is not None and annotated_out is not None:
             try:
                 ret, jpeg = cv2.imencode('.jpg', annotated_out, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
@@ -291,10 +315,12 @@ _global_sensor: Optional[SensorListener] = None
 _global_node: Optional[Node] = None
 _global_executor: Optional[SingleThreadedExecutor] = None
 _global_thread: Optional[threading.Thread] = None
+_pub_cam_front_ann = None
+_pub_cam_down_ann = None
 
 def get_sensor(target_digit: int = 2) -> SensorListener:
     """Mengembalikan instance SensorListener tunggal dan mengaktifkan node ROS 2 di background."""
-    global _global_sensor, _global_node, _global_executor, _global_thread
+    global _global_sensor, _global_node, _global_executor, _global_thread, _pub_cam_front_ann, _pub_cam_down_ann
     if not rclpy.ok():
         rclpy.init()
 
@@ -302,14 +328,18 @@ def get_sensor(target_digit: int = 2) -> SensorListener:
         _global_sensor = SensorListener(target_digit=target_digit)
         _global_node = Node("core_sensor_manager_node")
 
-        _global_node.create_subscription(Image, "/camera_down", _global_sensor.on_camera_down, 10)
-        _global_node.create_subscription(Image, "/camera_front", _global_sensor.on_camera_front, 10)
-        _global_node.create_subscription(LaserScan, "/lidar_front", _global_sensor.on_lidar_front, 10)
-        _global_node.create_subscription(LaserScan, "/lidar_back", _global_sensor.on_lidar_back, 10)
-        _global_node.create_subscription(LaserScan, "/lidar_left", _global_sensor.on_lidar_left, 10)
-        _global_node.create_subscription(LaserScan, "/lidar_right", _global_sensor.on_lidar_right, 10)
-        _global_node.create_subscription(LaserScan, "/lidar_up", _global_sensor.on_lidar_up, 10)
-        _global_node.create_subscription(LaserScan, "/lidar_down", _global_sensor.on_lidar_down, 10)
+        # Publishers untuk meneruskan olah citra visual OpenCV ke Web Dashboard
+        _pub_cam_front_ann = _global_node.create_publisher(Image, "/camera_front/annotated", qos_profile_sensor_data)
+        _pub_cam_down_ann = _global_node.create_publisher(Image, "/camera_down/annotated", qos_profile_sensor_data)
+
+        _global_node.create_subscription(Image, "/camera_down", _global_sensor.on_camera_down, qos_profile_sensor_data)
+        _global_node.create_subscription(Image, "/camera_front", _global_sensor.on_camera_front, qos_profile_sensor_data)
+        _global_node.create_subscription(LaserScan, "/lidar_front", _global_sensor.on_lidar_front, qos_profile_sensor_data)
+        _global_node.create_subscription(LaserScan, "/lidar_back", _global_sensor.on_lidar_back, qos_profile_sensor_data)
+        _global_node.create_subscription(LaserScan, "/lidar_left", _global_sensor.on_lidar_left, qos_profile_sensor_data)
+        _global_node.create_subscription(LaserScan, "/lidar_right", _global_sensor.on_lidar_right, qos_profile_sensor_data)
+        _global_node.create_subscription(LaserScan, "/lidar_up", _global_sensor.on_lidar_up, qos_profile_sensor_data)
+        _global_node.create_subscription(LaserScan, "/lidar_down", _global_sensor.on_lidar_down, qos_profile_sensor_data)
 
         _global_executor = SingleThreadedExecutor()
         _global_executor.add_node(_global_node)

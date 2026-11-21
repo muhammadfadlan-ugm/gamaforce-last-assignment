@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
-Web Dashboard Telemetri & Kamera Drone Terpadu (Gamaforce)
-- 2 Kamera: /camera_front, /camera_down (MJPEG Stream ultra-low latency)
-- 6 LiDAR: /lidar_front, /lidar_back, /lidar_left, /lidar_right, /lidar_up, /lidar_down
-- Flight Status: /mavros/state (Arming, Flight Mode, Connection)
+================================================================================
+GAMAFORCE - WEB DASHBOARD TELEMETRI & KAMERA DRONE TERPADU
+================================================================================
+Dashboard real-time terpadu untuk memantau:
+- 2 Kamera: /camera_front, /camera_down (beserta /annotated stream visual OpenCV)
+- 6 LiDAR 1D: /lidar_front, /lidar_back, /lidar_left, /lidar_right, /lidar_up, /lidar_down
+- Flight Status: /mavros/state (Connection, Arming, Flight Mode)
 - Posisi & Attitude: /mavros/local_position/pose (Altitude Z, X, Y, Roll, Pitch, Yaw)
-- Kecepatan: /mavros/local_position/velocity_body
+- Kecepatan: /mavros/local_position/velocity_body & velocity_local
 - Baterai: /mavros/battery
+- Radar Hambatan 2D real-time
 
 Dapat diakses di browser: http://localhost:5000
+================================================================================
 """
 
 import sys
@@ -23,17 +28,25 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import numpy as np
 import cv2
 
-# ROS 2
+# ROS 2 & QoS Profiles
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.qos import (
+    QoSProfile,
+    ReliabilityPolicy,
+    DurabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import Image, LaserScan, BatteryState
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from mavros_msgs.msg import State
 
 LIDAR_NAMES = ['front', 'back', 'left', 'right', 'up', 'down']
 
+
 # ==============================================================================
-# DATA HUB (Thread-Safe Store)
+# DATA HUB (Thread-Safe Telemetry & Vision Store)
 # ==============================================================================
 class TelemetryDataHub:
     def __init__(self):
@@ -45,10 +58,13 @@ class TelemetryDataHub:
         self.jpeg_down = self._create_placeholder_jpeg("Kamera Bawah Menunggu Feed...")
         self.has_front = False
         self.has_down = False
+        self.t_last_ann_front = 0.0
+        self.t_last_ann_down = 0.0
 
-        # Status & Telemetri
+        # Status & Telemetri Terpadu
         self.telemetry = {
             "connected": False,
+            "sim_active": False,
             "armed": False,
             "guided": False,
             "mode": "DISCONNECTED",
@@ -71,76 +87,96 @@ class TelemetryDataHub:
             "cam_down_active": False
         }
 
-    def _create_placeholder_jpeg(self, label):
+    def _create_placeholder_jpeg(self, label: str) -> bytes:
         img = np.zeros((360, 480, 3), dtype=np.uint8)
-        img[:] = (20, 24, 30)
-        # Border
-        cv2.rectangle(img, (10, 10), (470, 350), (40, 50, 65), 2)
-        cv2.putText(img, label, (30, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (160, 170, 185), 2, cv2.LINE_AA)
-        cv2.putText(img, "Belum ada frame diterima", (120, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 110, 125), 1, cv2.LINE_AA)
+        img[:] = (18, 22, 28)
+        cv2.rectangle(img, (10, 10), (470, 350), (45, 55, 72), 2)
+        cv2.putText(img, label, (35, 175), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (160, 175, 195), 2, cv2.LINE_AA)
+        cv2.putText(img, "Menunggu topic aktif dari sensor bridge...", (65, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (105, 115, 130), 1, cv2.LINE_AA)
         _, jpeg = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
         return jpeg.tobytes()
 
-    def update_camera(self, cam_type, img_msg):
-        # Konversi aman tanpa ketergantungan cv_bridge
+    def update_camera(self, cam_type: str, img_msg: Image):
+        """Konversi citra ROS 2 (RGB/BGR/Mono/RGBA) ke JPEG untuk MJPEG streaming."""
         try:
-            if img_msg.encoding in ('bgr8', 'rgb8'):
+            is_ann = "ann" in cam_type
+            now = time.time()
+
+            # Jika frame biasa datang tetapi frame annotated baru saja diperbarui (<0.8s lalu), prioritaskan annotated
+            if not is_ann:
+                if 'front' in cam_type and (now - self.t_last_ann_front < 0.8):
+                    return
+                if 'down' in cam_type and (now - self.t_last_ann_down < 0.8):
+                    return
+
+            encoding = img_msg.encoding.lower() if img_msg.encoding else 'bgr8'
+            if encoding in ('bgr8', 'rgb8'):
                 n_channels = 3
                 dtype = np.uint8
-            elif img_msg.encoding == 'mono8':
+            elif encoding in ('mono8', '8uc1'):
                 n_channels = 1
                 dtype = np.uint8
+            elif encoding in ('rgba8', 'bgra8', '8uc4'):
+                n_channels = 4
+                dtype = np.uint8
             else:
-                return
+                n_channels = 3
+                dtype = np.uint8
 
             img_arr = np.frombuffer(img_msg.data, dtype=dtype)
             if n_channels == 3:
                 img_arr = img_arr.reshape((img_msg.height, img_msg.width, 3))
-                if img_msg.encoding == 'rgb8':
-                    bgr = cv2.cvtColor(img_arr, cv2.COLOR_RGB2BGR)
-                else:
-                    bgr = img_arr
+                bgr = cv2.cvtColor(img_arr, cv2.COLOR_RGB2BGR) if encoding == 'rgb8' else img_arr
+            elif n_channels == 4:
+                img_arr = img_arr.reshape((img_msg.height, img_msg.width, 4))
+                bgr = cv2.cvtColor(img_arr, cv2.COLOR_RGBA2BGR) if encoding in ('rgba8', '8uc4') else cv2.cvtColor(img_arr, cv2.COLOR_BGRA2BGR)
             else:
                 img_arr = img_arr.reshape((img_msg.height, img_msg.width))
                 bgr = cv2.cvtColor(img_arr, cv2.COLOR_GRAY2BGR)
 
-            # Encode langsung ke JPEG
-            ret, jpeg = cv2.imencode('.jpg', bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+            ret, jpeg = cv2.imencode('.jpg', bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
             if ret:
                 with self.lock:
-                    if cam_type == 'front':
+                    if 'front' in cam_type:
                         self.jpeg_front = jpeg.tobytes()
                         self.has_front = True
                         self.telemetry['cam_front_active'] = True
+                        if is_ann:
+                            self.t_last_ann_front = now
                     else:
                         self.jpeg_down = jpeg.tobytes()
                         self.has_down = True
                         self.telemetry['cam_down_active'] = True
+                        if is_ann:
+                            self.t_last_ann_down = now
+                    self.telemetry['sim_active'] = True
+                    self.telemetry['last_update'] = now
         except Exception:
             pass
 
-    def update_lidar(self, name, scan_msg):
+    def update_lidar(self, name: str, scan_msg: LaserScan):
+        """Pembaruan jarak 6 LiDAR dengan penyaringan data valid."""
         with self.lock:
             if scan_msg.ranges:
-                r = scan_msg.ranges[0]
-                if math.isnan(r):
-                    self.telemetry['lidar'][name] = None
-                    self.telemetry['lidar_status'][name] = "Menunggu..."
-                elif math.isinf(r):
-                    if r > 0:
-                        self.telemetry['lidar'][name] = 10.0
-                        self.telemetry['lidar_status'][name] = "> 10.0 m (Bebas)"
-                    else:
-                        self.telemetry['lidar'][name] = 0.1
-                        self.telemetry['lidar_status'][name] = "< 0.12 m (DEKAT!)"
-                else:
+                # Saring pembacaan numerik valid
+                valid = [r for r in scan_msg.ranges if not math.isnan(r) and not math.isinf(r) and 0.05 < r < 25.0]
+                if valid:
+                    r = min(valid)
                     self.telemetry['lidar'][name] = round(float(r), 2)
                     self.telemetry['lidar_status'][name] = f"{r:4.2f} m"
+                else:
+                    # Tidak ada objek terdeteksi di dalam jarak jangkau sensor (bebas/aman)
+                    max_r = scan_msg.range_max if (scan_msg.range_max and scan_msg.range_max > 0) else 10.0
+                    self.telemetry['lidar'][name] = round(float(max_r), 1)
+                    self.telemetry['lidar_status'][name] = f"> {max_r:.1f} m (Bebas)"
+            self.telemetry['sim_active'] = True
             self.telemetry['last_update'] = time.time()
 
     def update_state(self, state_msg: State):
+        """Pembaruan status koneksi dan flight mode dari MAVROS."""
         with self.lock:
             self.telemetry['connected'] = state_msg.connected
+            self.telemetry['sim_active'] = True
             self.telemetry['armed'] = state_msg.armed
             self.telemetry['guided'] = state_msg.guided
             self.telemetry['mode'] = state_msg.mode if state_msg.mode else "DISCONNECTED"
@@ -148,6 +184,7 @@ class TelemetryDataHub:
             self.telemetry['last_update'] = time.time()
 
     def update_pose(self, pose_msg: PoseStamped):
+        """Pembaruan posisi EKF (x, y, z) dan orientasi sudut Euler (roll, pitch, yaw)."""
         p = pose_msg.pose.position
         q = pose_msg.pose.orientation
         roll, pitch, yaw = self._quaternion_to_euler(q.x, q.y, q.z, q.w)
@@ -159,27 +196,37 @@ class TelemetryDataHub:
             self.telemetry['roll'] = round(roll, 1)
             self.telemetry['pitch'] = round(pitch, 1)
             self.telemetry['yaw'] = round(yaw, 1)
+            self.telemetry['sim_active'] = True
             self.telemetry['last_update'] = time.time()
 
     def update_velocity(self, vel_msg: TwistStamped):
+        """Pembaruan kecepatan linier translasi."""
         v = vel_msg.twist.linear
         with self.lock:
             self.telemetry['vx'] = round(float(v.x), 2)
             self.telemetry['vy'] = round(float(v.y), 2)
             self.telemetry['vz'] = round(float(v.z), 2)
+            self.telemetry['sim_active'] = True
+            self.telemetry['last_update'] = time.time()
 
     def update_battery(self, bat_msg: BatteryState):
+        """Pembaruan status baterai."""
         with self.lock:
             self.telemetry['battery_volt'] = round(float(bat_msg.voltage), 1)
-            self.telemetry['battery_pct'] = round(float(bat_msg.percentage) * 100, 0)
+            pct = float(bat_msg.percentage) * 100.0 if bat_msg.percentage <= 1.0 else float(bat_msg.percentage)
+            self.telemetry['battery_pct'] = round(max(0.0, min(100.0, pct)), 0)
+            self.telemetry['last_update'] = time.time()
 
-    def get_telemetry_json(self):
+    def get_telemetry_json(self) -> str:
         with self.lock:
+            # Periksa apakah data telemetri telah basi (> 4.5 detik tanpa pesan apapun)
+            if time.time() - self.telemetry['last_update'] > 4.5:
+                self.telemetry['sim_active'] = False
             return json.dumps(self.telemetry)
 
-    def get_jpeg(self, cam_type):
+    def get_jpeg(self, cam_type: str) -> bytes:
         with self.lock:
-            return self.jpeg_front if cam_type == 'front' else self.jpeg_down
+            return self.jpeg_front if 'front' in cam_type else self.jpeg_down
 
     @staticmethod
     def _quaternion_to_euler(x, y, z, w):
@@ -188,10 +235,7 @@ class TelemetryDataHub:
         roll = math.atan2(sinr_cosp, cosr_cosp)
 
         sinp = 2.0 * (w * y - z * x)
-        if abs(sinp) >= 1:
-            pitch = math.copysign(math.pi / 2, sinp)
-        else:
-            pitch = math.asin(sinp)
+        pitch = math.copysign(math.pi / 2, sinp) if abs(sinp) >= 1 else math.asin(sinp)
 
         siny_cosp = 2.0 * (w * z + x * y)
         cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
@@ -202,52 +246,72 @@ class TelemetryDataHub:
 
 data_hub = TelemetryDataHub()
 
+
 # ==============================================================================
-# ROS 2 SUBSCRIBER NODE
+# ROS 2 SUBSCRIBER NODE (Sensor Data QoS Compatibility)
 # ==============================================================================
 class TelemetryListenerNode(Node):
     def __init__(self):
         super().__init__('baca_semua_data_node')
 
-        # 1. Subscriber Kamera
+        # QoS sensor_data (BEST_EFFORT + VOLATILE) untuk kamera, lidar, dan pose
+        qos_sensor = qos_profile_sensor_data
+
+        # 1. Subscriber Kamera Depan & Bawah (Raw & Olah Citra Vision)
         self.sub_cam_front = self.create_subscription(
-            Image, '/camera_front', lambda m: data_hub.update_camera('front', m), 5
+            Image, '/camera_front', lambda m: data_hub.update_camera('front', m), qos_sensor
         )
         self.sub_cam_down = self.create_subscription(
-            Image, '/camera_down', lambda m: data_hub.update_camera('down', m), 5
+            Image, '/camera_down', lambda m: data_hub.update_camera('down', m), qos_sensor
+        )
+        self.sub_cam_front_ann = self.create_subscription(
+            Image, '/camera_front/annotated', lambda m: data_hub.update_camera('front_ann', m), qos_sensor
+        )
+        self.sub_cam_down_ann = self.create_subscription(
+            Image, '/camera_down/annotated', lambda m: data_hub.update_camera('down_ann', m), qos_sensor
         )
 
-        # 2. Subscriber 6 LiDAR
+        # 2. Subscriber 6 LiDAR 1D
         self.sub_lidars = []
         for name in LIDAR_NAMES:
             topic = f'/lidar_{name}'
             sub = self.create_subscription(
-                LaserScan, topic, self._make_lidar_cb(name), 10
+                LaserScan, topic, self._make_lidar_cb(name), qos_sensor
             )
             self.sub_lidars.append(sub)
 
         # 3. Subscriber MAVROS State & Posisi
-        self.sub_state = self.create_subscription(
-            State, '/mavros/state', data_hub.update_state, 10
+        # /mavros/state biasanya latched dengan TRANSIENT_LOCAL
+        qos_state_rel = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        qos_state_be = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.sub_state_rel = self.create_subscription(
+            State, '/mavros/state', data_hub.update_state, qos_state_rel
         )
-        self.sub_pose = self.create_subscription(
-            PoseStamped, '/mavros/local_position/pose', data_hub.update_pose, 10
-        )
-        self.sub_vel = self.create_subscription(
-            TwistStamped, '/mavros/local_position/velocity_body', data_hub.update_velocity, 10
-        )
-        self.sub_bat = self.create_subscription(
-            BatteryState, '/mavros/battery', data_hub.update_battery, 10
+        self.sub_state_be = self.create_subscription(
+            State, '/mavros/state', data_hub.update_state, qos_state_be
         )
 
-        self.get_logger().info("TelemetryListenerNode siap membaca seluruh sensor dan MAVROS.")
+        self.sub_pose = self.create_subscription(
+            PoseStamped, '/mavros/local_position/pose', data_hub.update_pose, qos_sensor
+        )
+        self.sub_vel_body = self.create_subscription(
+            TwistStamped, '/mavros/local_position/velocity_body', data_hub.update_velocity, qos_sensor
+        )
+        self.sub_vel_local = self.create_subscription(
+            TwistStamped, '/mavros/local_position/velocity_local', data_hub.update_velocity, qos_sensor
+        )
+        self.sub_bat = self.create_subscription(
+            BatteryState, '/mavros/battery', data_hub.update_battery, qos_sensor
+        )
+
+        self.get_logger().info("TelemetryListenerNode aktif dengan QoS sensor_data untuk menjamin penerimaan data.")
 
     def _make_lidar_cb(self, name):
         return lambda msg: data_hub.update_lidar(name, msg)
 
 
 # ==============================================================================
-# WEB SERVER & HTTP HANDLER
+# WEB SERVER & RESPONSIVE DASHBOARD UI
 # ==============================================================================
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="id">
@@ -297,6 +361,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       display: inline-flex;
       align-items: center;
       gap: 6px;
+      transition: all 0.25s ease;
     }
     .badge-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
     .bg-red { background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid var(--red); }
@@ -354,7 +419,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       position: absolute;
       top: 10px;
       left: 10px;
-      background: rgba(0,0,0,0.6);
+      background: rgba(0,0,0,0.65);
       padding: 4px 8px;
       border-radius: 6px;
       font-size: 0.75rem;
@@ -423,7 +488,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
 
-  <!-- Header -->
+  <!-- Header Status -->
   <header>
     <div class="brand">
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2">
@@ -432,7 +497,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <h1>GAMAFORCE <span>GCS TELEMETRY</span></h1>
     </div>
     <div class="badges">
-      <div id="badge-conn" class="badge bg-red"><span class="badge-dot" style="background:#ef4444"></span><span id="txt-conn">DISCONNECTED</span></div>
+      <div id="badge-conn" class="badge bg-red"><span class="badge-dot" style="background:#ef4444"></span><span id="txt-conn">MENUNGGU FEED</span></div>
       <div id="badge-arm" class="badge bg-red"><span id="txt-arm">DISARMED</span></div>
       <div id="badge-mode" class="badge bg-blue"><span id="txt-mode">MODE: -</span></div>
     </div>
@@ -442,23 +507,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="dashboard-grid">
     <div class="card">
       <div class="card-header">
-        <span>Kamera Depan (/camera_front)</span>
-        <span id="cam-front-stat" style="color:var(--text-muted); font-size:0.8rem">LIVE</span>
+        <span>Kamera Depan (/camera_front &amp; Vision HUD)</span>
+        <span id="cam-front-stat" style="color:var(--text-muted); font-size:0.8rem">STANDBY</span>
       </div>
       <div class="video-container">
-        <span class="video-overlay">FRONT 640x480</span>
-        <img src="/stream/camera_front" alt="Kamera Depan">
+        <span class="video-overlay" id="overlay-front">FRONT 640x480</span>
+        <img id="img-front" src="/stream/camera_front" alt="Kamera Depan" onerror="setTimeout(() => { this.src = '/stream/camera_front?t=' + Date.now(); }, 1000)">
       </div>
     </div>
 
     <div class="card">
       <div class="card-header">
-        <span>Kamera Bawah (/camera_down)</span>
-        <span id="cam-down-stat" style="color:var(--text-muted); font-size:0.8rem">LIVE</span>
+        <span>Kamera Bawah (/camera_down &amp; Vision HUD)</span>
+        <span id="cam-down-stat" style="color:var(--text-muted); font-size:0.8rem">STANDBY</span>
       </div>
       <div class="video-container">
-        <span class="video-overlay">DOWN 640x480</span>
-        <img src="/stream/camera_down" alt="Kamera Bawah">
+        <span class="video-overlay" id="overlay-down">DOWN 640x480</span>
+        <img id="img-down" src="/stream/camera_down" alt="Kamera Bawah" onerror="setTimeout(() => { this.src = '/stream/camera_down?t=' + Date.now(); }, 1000)">
       </div>
     </div>
   </div>
@@ -472,7 +537,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
     <div class="stat-card">
       <div class="stat-title">Posisi X / Y</div>
-      <div class="stat-value" id="val-xy">0.0 / 0.0</div>
+      <div class="stat-value" id="val-xy">0.00 / 0.00</div>
       <div class="stat-sub">Koordinat lokal (m)</div>
     </div>
     <div class="stat-card">
@@ -482,7 +547,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
     <div class="stat-card">
       <div class="stat-title">Kecepatan Vx / Vy</div>
-      <div class="stat-value" id="val-vxy">0.0 m/s</div>
+      <div class="stat-value" id="val-vxy">0.00 m/s</div>
       <div class="stat-sub">Horizontal Speed</div>
     </div>
     <div class="stat-card">
@@ -501,7 +566,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </div>
       <div class="card-body">
         <div class="lidar-grid">
-          <!-- 6 LiDAR Cards -->
           <div class="lidar-card" id="card-lidar-front">
             <div class="lidar-name">Depan</div>
             <div class="lidar-val" id="val-lidar-front">--</div>
@@ -550,7 +614,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <script>
     const LIDAR_NAMES = ['front', 'back', 'left', 'right', 'up', 'down'];
 
-    // Polling Telemetri secara teratur (~100ms)
+    // Polling Telemetri secara periodik (~100ms)
     async function updateTelemetry() {
       try {
         const res = await fetch('/api/telemetry');
@@ -560,9 +624,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         // 1. Connection & Mode Status
         const bConn = document.getElementById('badge-conn');
         const tConn = document.getElementById('txt-conn');
-        if (d.connected) {
+        if (d.connected || d.sim_active) {
           bConn.className = 'badge bg-green';
-          tConn.innerText = 'CONNECTED';
+          tConn.innerText = d.connected ? 'CONNECTED (MAVROS)' : 'SIM ACTIVE (BRIDGED)';
         } else {
           bConn.className = 'badge bg-red';
           tConn.innerText = 'DISCONNECTED';
@@ -580,53 +644,77 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         // Mode
-        document.getElementById('txt-mode').innerText = 'MODE: ' + d.mode;
+        document.getElementById('txt-mode').innerText = 'MODE: ' + (d.mode || '-');
+
+        // Status Kamera Live
+        const statF = document.getElementById('cam-front-stat');
+        if (d.cam_front_active) {
+          statF.innerText = 'LIVE';
+          statF.style.color = 'var(--green)';
+        }
+        const statD = document.getElementById('cam-down-stat');
+        if (d.cam_down_active) {
+          statD.innerText = 'LIVE';
+          statD.style.color = 'var(--green)';
+        }
 
         // 2. Stats Numerik
-        document.getElementById('val-alt').innerText = d.z.toFixed(2) + ' m';
-        document.getElementById('val-vz').innerText = 'Vz: ' + d.vz.toFixed(2) + ' m/s';
-        document.getElementById('val-xy').innerText = d.x.toFixed(2) + ' / ' + d.y.toFixed(2);
-        document.getElementById('val-yaw').innerText = d.yaw.toFixed(1) + '°';
-        document.getElementById('val-rp').innerText = 'R: ' + d.roll.toFixed(1) + '° | P: ' + d.pitch.toFixed(1) + '°';
+        const alt = typeof d.z === 'number' ? d.z.toFixed(2) : '0.00';
+        const vz = typeof d.vz === 'number' ? d.vz.toFixed(2) : '0.00';
+        const px = typeof d.x === 'number' ? d.x.toFixed(2) : '0.00';
+        const py = typeof d.y === 'number' ? d.y.toFixed(2) : '0.00';
+        const yaw = typeof d.yaw === 'number' ? d.yaw.toFixed(1) : '0.0';
+        const roll = typeof d.roll === 'number' ? d.roll.toFixed(1) : '0.0';
+        const pitch = typeof d.pitch === 'number' ? d.pitch.toFixed(1) : '0.0';
 
-        const speedXY = Math.sqrt(d.vx*d.vx + d.vy*d.vy);
+        document.getElementById('val-alt').innerText = alt + ' m';
+        document.getElementById('val-vz').innerText = 'Vz: ' + vz + ' m/s';
+        document.getElementById('val-xy').innerText = px + ' / ' + py;
+        document.getElementById('val-yaw').innerText = yaw + '°';
+        document.getElementById('val-rp').innerText = 'R: ' + roll + '° | P: ' + pitch + '°';
+
+        const vx = typeof d.vx === 'number' ? d.vx : 0;
+        const vy = typeof d.vy === 'number' ? d.vy : 0;
+        const speedXY = Math.sqrt(vx * vx + vy * vy);
         document.getElementById('val-vxy').innerText = speedXY.toFixed(2) + ' m/s';
 
-        if (d.battery_volt > 0) {
+        if (d.battery_volt && d.battery_volt > 0) {
           document.getElementById('val-bat').innerText = d.battery_volt.toFixed(1) + ' V';
-          document.getElementById('val-bat-pct').innerText = d.battery_pct.toFixed(0) + ' %';
+          document.getElementById('val-bat-pct').innerText = (d.battery_pct || 0).toFixed(0) + ' %';
         }
 
         // 3. Update 6 LiDAR Bars
-        LIDAR_NAMES.forEach(name => {
-          const valEl = document.getElementById('val-lidar-' + name);
-          const barEl = document.getElementById('bar-lidar-' + name);
-          const cardEl = document.getElementById('card-lidar-' + name);
-          const val = d.lidar[name];
-          const statText = d.lidar_status[name];
+        if (d.lidar && d.lidar_status) {
+          LIDAR_NAMES.forEach(name => {
+            const valEl = document.getElementById('val-lidar-' + name);
+            const barEl = document.getElementById('bar-lidar-' + name);
+            const cardEl = document.getElementById('card-lidar-' + name);
+            if (!valEl || !barEl || !cardEl) return;
 
-          valEl.innerText = statText;
+            const val = d.lidar[name];
+            const statText = d.lidar_status[name] || '--';
+            valEl.innerText = statText;
 
-          if (val === null || isNaN(val)) {
-            barEl.style.width = '0%';
-            cardEl.style.borderColor = 'var(--card-border)';
-          } else {
-            // Persentase skala max 10 meter
-            const pct = Math.min(100, Math.max(5, (val / 10.0) * 100));
-            barEl.style.width = pct + '%';
-
-            if (val < 0.8) {
-              barEl.style.backgroundColor = 'var(--red)';
-              cardEl.style.borderColor = 'var(--red)';
-            } else if (val < 1.5) {
-              barEl.style.backgroundColor = 'var(--yellow)';
-              cardEl.style.borderColor = 'var(--yellow)';
-            } else {
-              barEl.style.backgroundColor = 'var(--green)';
+            if (val === null || isNaN(val)) {
+              barEl.style.width = '0%';
               cardEl.style.borderColor = 'var(--card-border)';
+            } else {
+              const pct = Math.min(100, Math.max(6, (val / 10.0) * 100));
+              barEl.style.width = pct + '%';
+
+              if (val < 0.8) {
+                barEl.style.backgroundColor = 'var(--red)';
+                cardEl.style.borderColor = 'var(--red)';
+              } else if (val < 1.5) {
+                barEl.style.backgroundColor = 'var(--yellow)';
+                cardEl.style.borderColor = 'var(--yellow)';
+              } else {
+                barEl.style.backgroundColor = 'var(--green)';
+                cardEl.style.borderColor = 'var(--card-border)';
+              }
             }
-          }
-        });
+          });
+        }
 
         // 4. Render 2D Radar
         drawRadar(d.lidar);
@@ -640,12 +728,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     // Gambar Radar 2D Lingkaran
     const canvas = document.getElementById('radarCanvas');
-    const ctx = canvas.getContext('2d');
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
+    const ctx = canvas ? canvas.getContext('2d') : null;
+    const cx = canvas ? canvas.width / 2 : 100;
+    const cy = canvas ? canvas.height / 2 : 100;
     const maxRadius = 85;
 
     function drawRadar(lidar) {
+      if (!ctx || !lidar) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       // Lingkaran konsentris jarak (2m, 5m, 10m)
@@ -678,12 +767,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         { name: 'right', dx: 1, dy: 0 }
       ];
 
-      dirs.forEach(d => {
-        const dist = lidar[d.name];
+      dirs.forEach(target => {
+        const dist = lidar[target.name];
         if (dist !== null && !isNaN(dist) && dist < 10.0) {
           const r = Math.min(maxRadius, (dist / 10.0) * maxRadius);
-          const px = cx + d.dx * r;
-          const py = cy + d.dy * r;
+          const px = cx + target.dx * r;
+          const py = cy + target.dy * r;
 
           ctx.beginPath();
           ctx.arc(px, py, dist < 0.8 ? 6 : 4, 0, 2 * Math.PI);
@@ -693,15 +782,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       });
     }
 
+    // Mulai polling
     updateTelemetry();
   </script>
 </body>
 </html>
 """
 
+
+# ==============================================================================
+# HTTP HANDLER (REST API & MJPEG VIDEO STREAM)
+# ==============================================================================
 class DashboardHTTPRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        # Mute log default terminal agar output bersih
+        # Mute log default terminal agar output terminal tetap bersih
         return
 
     def do_HEAD(self):
@@ -712,34 +806,41 @@ class DashboardHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = self.path.split('?')[0]
 
-        if parsed == '/' or parsed == '/index.html':
+        if parsed in ('/', '/index.html'):
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Cache-Control', 'no-cache, no-store')
             self.end_headers()
             self.wfile.write(HTML_TEMPLATE.encode('utf-8'))
+            self.wfile.flush()
 
         elif parsed == '/api/telemetry':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Cache-Control', 'no-cache, no-store')
+            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+            self.send_header('Pragma', 'no-cache')
+            self.send_header('Expires', '0')
             self.end_headers()
             self.wfile.write(data_hub.get_telemetry_json().encode('utf-8'))
+            self.wfile.flush()
 
         elif parsed in ('/stream/camera_front', '/stream/camera_down'):
             cam_type = 'front' if 'front' in parsed else 'down'
             self.send_response(200)
             self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
-            self.send_header('Cache-Control', 'no-cache, private')
+            self.send_header('Cache-Control', 'no-cache, no-store, private')
             self.send_header('Pragma', 'no-cache')
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
 
             try:
                 while data_hub.running:
                     jpeg = data_hub.get_jpeg(cam_type)
                     self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + jpeg + b'\r\n')
+                    self.wfile.flush()
                     time.sleep(0.04)  # ~25 FPS
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, Exception):
                 pass
         else:
             self.send_response(404)
@@ -754,18 +855,23 @@ def main():
     parser.add_argument('--port', type=int, default=5000, help="Port Web Server (default: 5000)")
     args, _ = parser.parse_known_args()
 
+    import signal
+
     # 1. Inisialisasi ROS 2
     rclpy.init()
     node = TelemetryListenerNode()
 
-    # 2. Spin ROS 2 di background thread
-    def spin_wrapper():
+    # 2. Spin ROS 2 di background thread dengan SingleThreadedExecutor terisolasi
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+
+    def spin_worker():
         try:
-            rclpy.spin(node)
+            executor.spin()
         except (rclpy.executors.ExternalShutdownException, Exception):
             pass
 
-    ros_thread = threading.Thread(target=spin_wrapper, daemon=True)
+    ros_thread = threading.Thread(target=spin_worker, daemon=True)
     ros_thread.start()
 
     # 3. Jalankan HTTP Web Server
@@ -773,25 +879,39 @@ def main():
     ThreadingHTTPServer.allow_reuse_address = True
     httpd = ThreadingHTTPServer(server_address, DashboardHTTPRequestHandler)
 
-    print("=" * 60)
+    def shutdown_signal(sig, frame):
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGINT, shutdown_signal)
+    signal.signal(signal.SIGTERM, shutdown_signal)
+
+    print("\n" + "=" * 65)
     print("   GAMAFORCE DRONE TELEMETRY & VISION WEB DASHBOARD")
-    print("=" * 60)
-    print(f"[OK] Dashboard aktif!")
+    print("=" * 65)
+    print(f"[OK] Dashboard aktif dan mendengarkan pada seluruh interface!")
     print(f"[+] Buka di browser: http://localhost:{args.port}")
-    print(f"[+] Menerima data 2 kamera, 6 LiDAR, dan status MAVROS.")
-    print("    Tekan Ctrl+C di terminal ini untuk berhenti.")
-    print("=" * 60)
+    print(f"[+] Menerima stream 2 kamera, 6 LiDAR, dan telemetry MAVROS.")
+    print("    Tekan Ctrl+C di terminal ini untuk keluar.")
+    print("=" * 65 + "\n")
 
     try:
         httpd.serve_forever()
-    except KeyboardInterrupt:
-        print("\n[!] Menghentikan server...")
+    except Exception:
+        pass
     finally:
         data_hub.running = False
-        httpd.server_close()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        try:
+            httpd.server_close()
+        except Exception:
+            pass
+        try:
+            executor.cancel()
+            ros_thread.join(timeout=1.0)
+            node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+        except Exception:
+            pass
         print("[OK] Selesai.")
 
 
