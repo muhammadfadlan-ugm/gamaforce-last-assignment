@@ -127,7 +127,8 @@ class QRCodeReader:
         if ids is not None and len(ids) > 0:
             best_idx = 0
             pts = corners[best_idx][0].astype(int)
-            marker_id = int(ids[best_idx][0])
+            ids_flat = ids.ravel()
+            marker_id = int(ids_flat[best_idx])
             val_str = f"ARUCO_ID_{marker_id}"
 
             cx = int(np.mean(pts[:, 0]))

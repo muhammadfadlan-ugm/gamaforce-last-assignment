@@ -54,8 +54,9 @@ class ObstacleKuningDetector:
     """
     def __init__(
         self,
-        lower_yellow: Tuple[int, int, int] = (10, 80, 50),
-        upper_yellow: Tuple[int, int, int] = (38, 255, 255),
+        # Gold / cokelat-keemasan (bukan kuning terang) — dari screenshot Gazebo
+        lower_yellow: Tuple[int, int, int] = (5, 40, 30),
+        upper_yellow: Tuple[int, int, int] = (35, 200, 220),
         min_area: float = 200.0,
         tolerance_px: int = 25,
     ):

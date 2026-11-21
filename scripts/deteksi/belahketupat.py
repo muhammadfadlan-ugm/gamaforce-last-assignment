@@ -41,7 +41,8 @@ import numpy as np
 COLOR_PRESETS = {
     "biru": {
         "name": "BIRU",
-        "lower": np.array([90, 80, 50], dtype=np.uint8),
+        # Lebarkan ke cyan (Hue ~78) karena obstacle ketiga di maze berwarna cyan
+        "lower": np.array([78, 60, 40], dtype=np.uint8),
         "upper": np.array([130, 255, 255], dtype=np.uint8),
         "bgr": (255, 200, 0),       # Cyan / Biru Muda
         "hud_bg": (180, 80, 0),

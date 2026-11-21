@@ -18,4 +18,15 @@ pkill -9 -f "sensors_mavros.launch.py" 2>/dev/null || true
 pkill -9 -f "misi_gabungan.py" 2>/dev/null || true
 pkill -9 -f "baca_semua_data.py" 2>/dev/null || true
 
+echo "[+] Menutup jendela-jendela terminal..."
+if command -v wmctrl >/dev/null 2>&1; then
+    wmctrl -c "Terminal 2 - SITL ArduCopter" 2>/dev/null || true
+    wmctrl -c "Terminal 3 - ROS 2 MAVROS" 2>/dev/null || true
+    wmctrl -c "Terminal 4 - Misi Drone" 2>/dev/null || true
+    sleep 0.5
+else
+    echo "    [!] 'wmctrl' belum terinstal -> jendela tidak bisa ditutup otomatis."
+    echo "        Install dulu dengan: sudo apt install wmctrl"
+fi
+
 echo "[OK] Semua proses simulasi berhasil dihentikan!"
