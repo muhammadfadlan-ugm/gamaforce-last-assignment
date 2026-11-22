@@ -750,45 +750,270 @@ def tahap_pad_dan_ring() -> bool:
         node.destroy_node()
 
 # ============================================================================
-# TAHAP 10: VERIFIKASI VISUAL BULLSEYE SAAT HOVER
+# TAHAP 10: VERIFIKASI VISUAL & TRACKING CENTERING BULLSEYE
 # ============================================================================
-def tahap_verifikasi_bullseye(drone, sensor, qr_data, baca_lidar_depan) -> bool:
-    print("\n>>> [TAHAP 10] VERIFIKASI VISUAL BULLSEYE")
-    marker = re.fullmatch(r"(?:ARUCO_ID_)?([123])", (qr_data or "").strip(), re.IGNORECASE)
-    id_qr = int(marker.group(1)) if marker is not None else None
-    if id_qr is None:
-        print("[!] QR/ArUco tidak memberikan ID bullseye yang valid.")
+def arahkan_yaw_presisi(drone, target_yaw_deg: float, speed_deg_s: float = 45.0, timeout_s: float = 5.0) -> bool:
+    """Memutar yaw drone dengan arah terpendek (CW/CCW) secara presisi."""
+    from pymavlink import mavutil
+    drone.update()
+    err = (target_yaw_deg - drone.yaw_deg + 180.0) % 360.0 - 180.0
+    if abs(err) <= 5.0:
+        return True
 
-    detector = KamikazeDetector(target_digit=None)
-    semua_id = set()
-    for label, heading in (("kanan", 45.0), ("tengah", 0.0), ("kiri", 315.0)):
-        drone.set_yaw(heading, speed_deg_s=30.0, timeout=WAKTU_KOREKSI_YAW_S)
+    # 1 = Clockwise (kanan), -1 = Counter-Clockwise (kiri)
+    direction = 1 if err > 0 else -1
+    drone.m.mav.command_long_send(
+        drone.m.target_system, drone.m.target_component,
+        mavutil.mavlink.MAV_CMD_CONDITION_YAW,
+        0,
+        target_yaw_deg, speed_deg_s, direction, 0, 0, 0, 0
+    )
+    t_end = time.monotonic() + timeout_s
+    while time.monotonic() < t_end:
         drone.update()
-        if not abs((drone.yaw_deg - heading + 180.0) % 360.0 - 180.0) <= 5.0:
-            print(f"[!] Arah {label} belum tercapai. Yaw aktual {drone.yaw_deg:.1f}°.")
-            continue
+        sisa = (target_yaw_deg - drone.yaw_deg + 180.0) % 360.0 - 180.0
+        if abs(sisa) <= 5.0:
+            break
+        time.sleep(0.04)
+    drone.brake(0.1)
+    drone.update()
+    return abs((target_yaw_deg - drone.yaw_deg + 180.0) % 360.0 - 180.0) <= 6.0
+
+
+def tahap_verifikasi_bullseye(
+    drone,
+    sensor,
+    qr_data,
+    baca_lidar_depan,
+    lakukan_tracking: bool = True,
+    lakukan_kamikaze: bool = True
+) -> bool:
+    """
+    Tahap 10: Verifikasi visual ID bullseye, tracking centering, & tabrakan kamikaze.
+    - Mengaktifkan sensor mode KAMIKAZE agar dashboard menampilkan HUD vektor gerak.
+    - Menyesuaikan ketinggian drone (Z ~ 2.45 m) agar kamera sejajar dengan bullseye.
+    - Mengarahkan hadap yaw secara langsung ke arah target:
+        * Bullseye #1: Kiri (Yaw ~ 307.0°)
+        * Bullseye #2: Tengah (Yaw ~ 0.0°)
+        * Bullseye #3: Kanan (Yaw ~ 56.0°)
+    - Melakukan visual servoing gerak (yaw_rate, vy, vz_up) untuk mengunci titik pusat angka.
+    - Meluncurkan sprint Kamikaze (vx = 7.0 m/s) menabrak titik tengah angka hingga tabrakan.
+    """
+    print("\n" + "=" * 65)
+    print(">>> [TAHAP 10] VERIFIKASI VISUAL & TRACKING ANGKA BULLSEYE")
+    print("=" * 65)
+
+    # 1. Parse target digit dari QR (dengan fallback ke target.json)
+    id_qr = None
+    if qr_data:
+        marker = re.search(r'([123])', str(qr_data))
+        if marker is not None:
+            id_qr = int(marker.group(1))
+            print(f"[*] Target ID bullseye dari QR: #{id_qr}")
+        else:
+            print(f"[!] Format QR '{qr_data}' tidak valid.")
+
+    if id_qr is None:
+        target_json_path = os.path.join(SCRIPTS_DIR, "..", "target.json")
+        if not os.path.exists(target_json_path):
+            target_json_path = "target.json"
+        if os.path.exists(target_json_path):
+            try:
+                import json
+                with open(target_json_path, "r") as f:
+                    tj = json.load(f)
+                    id_qr = int(tj.get("target_bullseye", tj.get("marker_id", 2)))
+                    print(f"[*] Target ID bullseye dari target.json: #{id_qr}")
+            except Exception:
+                pass
+
+    if id_qr is None:
+        id_qr = 2
+        print(f"[*] Menggunakan fallback target default: #{id_qr}")
+
+    # 2. Aktifkan Mode KAMIKAZE pada SensorListener agar diteruskan ke Dashboard (HUD & Telemetri)
+    sensor.set_mode("KAMIKAZE")
+    sensor.target_digit = id_qr
+    if hasattr(sensor, "kamikaze_detector"):
+        sensor.kamikaze_detector.target_digit = id_qr
+    print(f"[*] Mode sensor dialihkan ke: KAMIKAZE (Target #{id_qr})")
+    print("[*] Stream HUD Kamera Depan & info gerak telah aktif ke Web Dashboard (/camera_front/annotated).")
+
+    # 3. Elevasi Ketinggian Drone agar Sejajar Target Bullseye (Z ~ 2.45 m)
+    TINGGI_BULLSEYE_APP = 2.45
+    delta_z = TINGGI_BULLSEYE_APP - drone.altitude
+    if delta_z > 0.15:
+        print(f"[*] Menyesuaikan ketinggian drone ke {TINGGI_BULLSEYE_APP:.2f} m (naik {delta_z:+.2f} m)...")
+        drone.gerak_relatif_presisi(naik_m=delta_z, kecepatan_maks=0.6, toleransi=0.10)
+        drone.brake(0.4)
+    print(f"[OK] Altitude drone siap untuk tracking: {drone.altitude:.2f} m | Yaw: {drone.yaw_deg:.1f}°")
+
+    # 4. Tentukan Arah Heading Nominal Berdasarkan Target Bullseye
+    # Koordinat dunia (Gazebo):
+    # Drone saat keluar ring berada di X ~ 3.3, Y ~ 17.5.
+    # Bullseye #1: X = -7.16, Y = 25.0 -> Sudut atan2(-10.46, 7.5) = -54.3° -> Yaw 306° (Kiri)
+    # Bullseye #2: X = +3.17, Y = 25.0 -> Sudut atan2(-0.13, 7.5)  =  -1.0° -> Yaw 0°   (Tengah)
+    # Bullseye #3: X = +14.76, Y = 25.0 -> Sudut atan2(+11.46, 7.5) = +56.8° -> Yaw 56°  (Kanan)
+    HEADING_MAP = {
+        1: 306.0,
+        2: 0.0,
+        3: 56.0,
+    }
+    nominal_target_yaw = HEADING_MAP.get(id_qr, 0.0)
+
+    # Pemindaian 3 arah lengkap agar seluruh hasil scan kanan, tengah, dan kiri tercatat:
+    # Bullseye #1: Kiri (306.0°)
+    # Bullseye #2: Tengah (0.0°)
+    # Bullseye #3: Kanan (56.0°)
+    urutan_scan = (("kiri", 306.0), ("tengah", 0.0), ("kanan", 56.0))
+
+    detector = KamikazeDetector(target_digit=id_qr)
+    arah_target_yaw = None
+    semua_id = set()
+    DURASI_SCAN_S = 2.0  # Durasi sampling kamera per arah
+
+    for label, heading in urutan_scan:
+        print(f"[*] Memeriksa hadap {label} (Target Yaw {heading:.1f}°)...")
+        sukses_yaw = arahkan_yaw_presisi(drone, heading, speed_deg_s=50.0, timeout_s=6.0)
+        if not sukses_yaw:
+            print(f"[!] Arah {label} belum stabil sempurna (Yaw aktual {drone.yaw_deg:.1f}°). Tetap memindai kamera...")
 
         id_per_arah = set()
-        deadline = time.monotonic() + WAKTU_VERIFIKASI_PER_ARAH_S
+        deadline = time.monotonic() + DURASI_SCAN_S
         while time.monotonic() < deadline:
-            jarak = baca_lidar_depan()
-            if jarak is not None and jarak >= 2.0:
-                frame = sensor.get_frame_front()
-                if frame is not None:
-                    hasil = detector.detect(frame, draw=False)
-                    id_per_arah.update(objek.digit for objek in hasil.all_targets
-                                       if objek.digit in (1, 2, 3))
-            time.sleep(0.1)
-        semua_id.update(id_per_arah)
-        print(f"[*] Hasil scan {label}: {sorted(id_per_arah)}.")
+            frame = sensor.get_frame_front()
+            if frame is not None:
+                hasil = detector.detect(frame, draw=True)
+                for obj in hasil.all_targets:
+                    if obj.digit in (1, 2, 3):
+                        id_per_arah.add(obj.digit)
+                        if obj.digit == id_qr:
+                            arah_target_yaw = heading
+            time.sleep(0.06)
 
-    print(f"[*] ID bullseye yang terlihat: {sorted(semua_id)}.")
-    if id_qr is None:
-        return False
-    if id_qr in semua_id:
-        print(f"[OK] Bullseye #{id_qr} cocok dengan QR. Tahan posisi.")
-        return True
-    print(f"[!] Bullseye #{id_qr} belum terverifikasi dari posisi hover.")
+        semua_id.update(id_per_arah)
+        print(f"[*] Hasil scan {label}: {sorted(id_per_arah)}")
+
+    print(f"[*] Semua ID bullseye yang terdeteksi: {sorted(semua_id)}")
+
+    if not lakukan_tracking:
+        terverifikasi = (id_qr in semua_id)
+        if terverifikasi:
+            print(f"[OK] Bullseye #{id_qr} terverifikasi cocok dengan QR. Tahan posisi.")
+        else:
+            print(f"[!] Bullseye #{id_qr} belum terverifikasi dari posisi hover.")
+        return terverifikasi
+
+    target_yaw_tujuan = arah_target_yaw if arah_target_yaw is not None else nominal_target_yaw
+    print(f"\n[*] Mengarahkan kembali moncong drone ke sasaran #{id_qr} (Yaw {target_yaw_tujuan:.1f}°)...")
+    arahkan_yaw_presisi(drone, target_yaw_tujuan, speed_deg_s=50.0, timeout_s=6.0)
+    drone.brake(0.2)
+
+    # 5. Visual Servoing Tracking & Centering ke Titik Pusat Box Angka
+    print("\n" + "=" * 65)
+    print(f">>> [TRACKING & CENTERING] MENGUNCI TITIK PUSAT ANGKA #{id_qr}")
+    print(">>> (Mengendalikan Visual Servoing: Yaw Rate, Vy, dan Vz_Up)")
+    print("=" * 65)
+    steady_aim = 0
+    t_start = time.time()
+    TIMEOUT_TRACKING_S = 30.0
+
+    while time.time() - t_start < TIMEOUT_TRACKING_S:
+        drone.update()
+        res_k = sensor.get_kamikaze()
+
+        target_now = None
+        if res_k is not None:
+            matching = [t for t in res_k.all_targets if t.digit == id_qr]
+            if res_k.locked_target and res_k.locked_target.digit == id_qr:
+                matching.append(res_k.locked_target)
+            if matching:
+                target_now = max(matching, key=lambda t: t.area)
+
+        if target_now is not None:
+            dx = target_now.dx
+            dy = target_now.dy
+            bx, by, bw, bh = target_now.bbox
+            tcx, tcy = target_now.cx, target_now.cy
+
+            # Visual Servoing P-Controller:
+            # - yaw_rate_cmd: Mengarahkan moncong drone horizontal ke titik tengah angka
+            # - vy_cmd      : Geser badan secara lateral
+            # - vz_cmd      : Naik/turun agar ketinggian kamera tepat dengan titik tengah angka
+            yaw_rate_cmd = float(np.clip(0.0055 * dx, -0.80, 0.80))
+            vy_cmd = float(np.clip(0.0035 * dx, -0.45, 0.45))
+            vz_cmd = float(np.clip(-0.0055 * dy, -0.65, 0.65))
+
+            # Kondisi Centering Presisi (|dx| <= 20 px & |dy| <= 20 px)
+            if abs(dx) <= 20 and abs(dy) <= 20:
+                steady_aim += 1
+                drone.send_velocity_body(0.0, 0.0, 0.0, yaw_rate=0.0)
+                if steady_aim >= 4:
+                    print(f"\n[OK] SASARAN ANGKA #{id_qr} TERKUNCI SEMPURNA DI TITIK PUSAT!")
+                    print(f"     -> Box: [{bx}, {by}, {bw}, {bh}] | Pusat: ({tcx}, {tcy}) | Err: dx={dx:+d}, dy={dy:+d}")
+
+                    # 6. Kamikaze Strike: Meluncur Cepat Menabrak Titik Tengah Sasaran
+                    if lakukan_kamikaze:
+                        print("\n" + "=" * 65)
+                        print(f"🚀🚀 [KAMIKAZE STRIKE] SPRINT MENABRAK TITIK TENGAH ANGKA #{id_qr}! (7.0 m/s) 🚀🚀")
+                        print("=" * 65)
+                        KECEPATAN_TABRAK = 7.0
+                        t_sprint = time.monotonic()
+                        while time.monotonic() - t_sprint < 6.0:
+                            drone.update()
+
+                            # Cek LiDAR depan untuk deteksi impact
+                            d_lidar = baca_lidar_depan()
+                            if d_lidar is None or d_lidar > 25.0:
+                                d_lidar = sensor.get_lidar_front()
+
+                            if d_lidar is not None and d_lidar <= 0.45:
+                                print(f"\n💥💥💥 IMPACT TABRAKAN TERJADI TEPAT PADA TITIK TENGAH SASARAN #{id_qr}! (LiDAR: {d_lidar:.2f} m) 💥💥💥")
+                                drone.send_velocity_body(vx=KECEPATAN_TABRAK, vy=0.0, vz_up=0.0, yaw_rate=0.0)
+                                time.sleep(0.25)
+                                break
+
+                            # Koreksi mikro garis lurus saat melesat agar tabrakan persis di tengah
+                            res_sprint = sensor.get_kamikaze()
+                            yaw_trim = 0.0
+                            vz_trim = 0.0
+                            if res_sprint is not None:
+                                match_sprint = [t for t in res_sprint.all_targets if t.digit == id_qr]
+                                if res_sprint.locked_target and res_sprint.locked_target.digit == id_qr:
+                                    match_sprint.append(res_sprint.locked_target)
+                                if match_sprint:
+                                    t_sp = max(match_sprint, key=lambda t: t.area)
+                                    yaw_trim = float(np.clip(0.0030 * t_sp.dx, -0.6, 0.6))
+                                    vz_trim = float(np.clip(-0.0030 * t_sp.dy, -0.4, 0.4))
+
+                            drone.send_velocity_body(vx=KECEPATAN_TABRAK, vy=0.0, vz_up=vz_trim, yaw_rate=yaw_trim)
+                            time.sleep(0.03)
+
+                        drone.brake(1.0)
+                        print("\n" + "=" * 65)
+                        print(f"🎉🎉 [MISI 3 SUKSES] DRONE TELAH MENABRAK TITIK TENGAH SASARAN #{id_qr}! 🎉🎉")
+                        print("=" * 65)
+                    return True
+            else:
+                steady_aim = 0
+                drone.send_velocity_body(vx=0.0, vy=vy_cmd, vz_up=vz_cmd, yaw_rate=yaw_rate_cmd)
+
+            if steady_aim == 0 and int(time.time() * 4) % 4 == 0:
+                print(f"  [CENTERING #{id_qr}] Box:[{bx},{by},{bw}x{bh}] | dx={dx:+3d}, dy={dy:+3d} | cmd: vy={vy_cmd:+.2f}, vz={vz_cmd:+.2f}, yaw={yaw_rate_cmd:+.2f}")
+        else:
+            steady_aim = 0
+            # Target belum masuk FOV: aktifkan rotasi yaw pencarian ke arah nominal target
+            err_yaw = (target_yaw_tujuan - drone.yaw_deg + 180.0) % 360.0 - 180.0
+            if abs(err_yaw) > 4.0:
+                yaw_search_rate = float(np.clip(0.015 * err_yaw, -0.50, 0.50))
+                drone.send_velocity_body(vx=0.0, vy=0.0, vz_up=0.0, yaw_rate=yaw_search_rate)
+            else:
+                drone.send_velocity_body(vx=0.05, vy=0.0, vz_up=0.0, yaw_rate=0.0)
+
+        time.sleep(0.033)
+
+    print(f"[!] Batas waktu tracking ({TIMEOUT_TRACKING_S}s) selesai.")
+    drone.brake(0.5)
     return False
 
 
@@ -897,7 +1122,8 @@ def main():
     print(f">>> [TAHAP 8] HOVER SERAH TERIMA pada altitude {drone.altitude:.2f} m.")
     try:
         if tahap_pad_dan_ring():
-            tahap_verifikasi_bullseye(drone, sensor, qr_data, lambda: baca_lidar("front"))
+            tahap_verifikasi_bullseye(drone, sensor, qr_data, lambda: baca_lidar("front"),
+                                      lakukan_tracking=True, lakukan_kamikaze=True)
     finally:
         drone.brake(1.0)
 

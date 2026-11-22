@@ -209,41 +209,71 @@ class KamikazeDetector:
         # 1. Deteksi Kandidat Berbasis Warna Bulls Eye (Target 1: Biru, Target 2: Merah, Target 3: Kuning)
         hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
         candidates: List[DetectedTarget] = []
-
-        # Masking Target 2 (Bulls Eye Merah)
-        m_red1 = cv2.inRange(hsv, np.array([0, 80, 50]), np.array([12, 255, 255]))
-        m_red2 = cv2.inRange(hsv, np.array([160, 80, 50]), np.array([180, 255, 255]))
-        mask_red = cv2.bitwise_or(m_red1, m_red2)
         kernel_morph = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        mask_red = cv2.morphologyEx(mask_red, cv2.MORPH_OPEN, kernel_morph)
 
-        red_contours, _ = cv2.findContours(mask_red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for r_cnt in red_contours:
-            r_area = cv2.contourArea(r_cnt)
-            if r_area >= 120.0:
-                (rcx_f, rcy_f), r_radius = cv2.minEnclosingCircle(r_cnt)
-                rcx, rcy = int(rcx_f), int(rcy_f)
-                rx, ry, rw, rh = cv2.boundingRect(r_cnt)
+        # Spesifikasi Warna Bulls Eye Gazebo:
+        # - Target 1: Lingkaran Biru (Hue ~ 118)
+        # - Target 2: Lingkaran Merah (Hue ~ 4 atau 176)
+        # - Target 3: Lingkaran Kuning / Oranye (Hue ~ 22 - 31)
+        target_color_specs = [
+            (
+                1,
+                "Biru",
+                [
+                    (np.array([100, 70, 40], dtype=np.uint8), np.array([135, 255, 255], dtype=np.uint8))
+                ]
+            ),
+            (
+                2,
+                "Merah",
+                [
+                    (np.array([0, 70, 50], dtype=np.uint8), np.array([12, 255, 255], dtype=np.uint8)),
+                    (np.array([160, 70, 50], dtype=np.uint8), np.array([180, 255, 255], dtype=np.uint8))
+                ]
+            ),
+            (
+                3,
+                "Kuning",
+                [
+                    (np.array([18, 70, 50], dtype=np.uint8), np.array([42, 255, 255], dtype=np.uint8))
+                ]
+            ),
+        ]
 
-                # Verifikasi digit di dalam area Bulls Eye Merah
-                digit_label = 2  # Target 2 secara spesifik adalah Bulls Eye Merah
-                
-                # Coba cari kontur digit di dalam ROI tengah Bulls Eye
+        for color_digit, color_name, hsv_ranges in target_color_specs:
+            mask_color = None
+            for lower_hsv, upper_hsv in hsv_ranges:
+                m = cv2.inRange(hsv, lower_hsv, upper_hsv)
+                mask_color = m if mask_color is None else cv2.bitwise_or(mask_color, m)
+
+            mask_color = cv2.morphologyEx(mask_color, cv2.MORPH_OPEN, kernel_morph)
+            color_contours, _ = cv2.findContours(mask_color, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            for cnt in color_contours:
+                area = cv2.contourArea(cnt)
+                if area < 100.0:
+                    continue
+
+                (cx_f, cy_f), radius = cv2.minEnclosingCircle(cnt)
+                rcx, rcy = int(cx_f), int(cy_f)
+                rx, ry, rw, rh = cv2.boundingRect(cnt)
+
+                digit_label = color_digit
                 digit_bbox = (rx, ry, rw, rh)
                 digit_cx, digit_cy = rcx, rcy
                 digit_found = False
 
+                # Cari kontur angka di dalam area Bulls Eye menggunakan Otsu adaptif
                 roi = gray[max(0, ry):min(h, ry+rh), max(0, rx):min(w, rx+rw)]
                 if roi.size > 0:
-                    _, roi_bin = cv2.threshold(roi, 85, 255, cv2.THRESH_BINARY_INV)
+                    _, roi_bin = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                     inner_cnts, _ = cv2.findContours(roi_bin, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                    
+
                     best_inner_area = 0.0
                     for icnt in inner_cnts:
                         ibx, iby, ibw, ibh = cv2.boundingRect(icnt)
                         iarea = cv2.contourArea(icnt)
-                        # Verifikasi bentuk proporsional karakter angka di dalam bulls eye
-                        if 6 <= ibw <= rw * 0.75 and 10 <= ibh <= rh * 0.85 and iarea >= 15:
+                        if 4 <= ibw <= rw * 0.80 and 8 <= ibh <= rh * 0.90 and iarea >= 10:
                             if iarea > best_inner_area:
                                 best_inner_area = iarea
                                 digit_bbox = (rx + ibx, ry + iby, ibw, ibh)
@@ -251,7 +281,7 @@ class KamikazeDetector:
                                 digit_cy = ry + iby + ibh // 2
                                 digit_found = True
 
-                            # Cek prediksi HOG+SVM
+                            # Cek prediksi HOG+SVM jika cocok
                             dcrop = roi_bin[iby:iby+ibh, ibx:ibx+ibw]
                             md = max(ibw, ibh) + 6
                             sq = np.zeros((md, md), dtype=np.uint8)
@@ -277,7 +307,7 @@ class KamikazeDetector:
                         bbox=digit_bbox,
                         cx=digit_cx,
                         cy=digit_cy,
-                        area=float(digit_bbox[2] * digit_bbox[3] if digit_found else r_area),
+                        area=float(digit_bbox[2] * digit_bbox[3] if digit_found else area),
                         dx=rdx,
                         dy=rdy,
                         norm_dx=rnorm_dx,
