@@ -916,7 +916,7 @@ def tahap_verifikasi_bullseye(
     print("=" * 65)
     steady_aim = 0
     t_start = time.time()
-    TIMEOUT_TRACKING_S = 30.0
+    TIMEOUT_TRACKING_S = 50.0
 
     while time.time() - t_start < TIMEOUT_TRACKING_S:
         drone.update()
@@ -959,7 +959,7 @@ def tahap_verifikasi_bullseye(
                         print("=" * 65)
                         KECEPATAN_TABRAK = 7.0
                         t_sprint = time.monotonic()
-                        while time.monotonic() - t_sprint < 6.0:
+                        while time.monotonic() - t_sprint < 10.0:
                             drone.update()
 
                             # Cek LiDAR depan untuk deteksi impact
